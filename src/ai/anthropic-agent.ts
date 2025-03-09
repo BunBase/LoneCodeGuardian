@@ -31,10 +31,23 @@ const CodeReviewSchema = z.object({
 						lineEnd: z.number().int().positive(),
 						description: z.string().min(1),
 						severity: z.enum(["low", "medium", "high"]),
+						category: z
+							.enum([
+								"security",
+								"performance",
+								"bug",
+								"type-safety",
+								"error-handling",
+								"maintainability",
+								"best-practice",
+								"other",
+							])
+							.default("other"),
 						suggestedFix: z.string().optional(),
+						suggestDiff: z.boolean().default(false),
 					}),
 				)
-				.optional(),
+				.default([]),
 			summary: z.string(),
 		}),
 	),
@@ -110,53 +123,27 @@ export class AnthropicAgent extends AIAgent {
 						`Attempt ${retries + 1}/${maxRetries} to generate review using Anthropic model`,
 					);
 
-					// Prepare the prompt with context about the changed files
-					const prompt = `Here are the changed files in the pull request that need review (${changedFiles.length} files):
+					// Step 1: First, use generateText to fetch file content
+					core.info("Step 1: Fetching file content...");
+					const fetchPrompt = `I need to review the following files in a pull request:
 
 ${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
 
-IMPORTANT INSTRUCTIONS:
-1. You MUST use the get_file_content tool to examine EACH file before commenting on it
-2. You MUST only review the files listed above - do not make up or reference non-existent files
-3. You MUST base your review ONLY on the actual content of these files
-4. You MUST use the exact filenames as listed above in your review
-5. You MUST NOT mention files like "main.js", "auth.py", "database.sql", or any other files that are not in the list above
+Please use the get_file_content tool to fetch the content of each file so we can review them properly.`;
 
-Please review these files for issues and provide specific actionable comments where appropriate. For each issue found, include the line numbers, description, severity, and a suggested fix if possible.`;
-
-					core.info(
-						`Sending prompt to Anthropic model with ${simpleChangedFiles.length} files`,
-					);
-
-					// Use generateObject to get structured review data
-					core.info("Generating structured code review...");
-
-					// First, use generateText to get tool calls
-					const { text: _, toolCalls } = await generateText({
+					const { toolCalls: fetchToolCalls } = await generateText({
 						model,
 						system: this.getSystemPrompt(),
-						prompt,
+						prompt: fetchPrompt,
 						tools,
 						temperature: 0.2,
-						maxTokens: 8000,
+						maxTokens: 4000,
 					});
 
-					// Then, use generateObject to get structured review data
-					const { object: detailedReview } = await generateObject({
-						model,
-						schema: CodeReviewSchema,
-						prompt: `${prompt}\n\nPlease provide your review in a structured format.`,
-						temperature: 0.2,
-					});
-
-					core.info(
-						`Received structured review with ${toolCalls?.length || 0} tool calls`,
-					);
-
-					// Process tool calls
-					if (toolCalls && toolCalls.length > 0) {
-						core.info(`Processing ${toolCalls.length} tool calls`);
-						for (const call of toolCalls) {
+					// Process fetch tool calls
+					if (fetchToolCalls && fetchToolCalls.length > 0) {
+						core.info(`Processing ${fetchToolCalls.length} fetch tool calls`);
+						for (const call of fetchToolCalls) {
 							core.info(
 								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
 							);
@@ -168,39 +155,161 @@ Please review these files for issues and provide specific actionable comments wh
 						}
 					} else {
 						core.warning(
-							"No tool calls were made by the model. This suggests the model is not properly using the tools.",
+							"No fetch tool calls were made. This may affect the quality of the review.",
 						);
 					}
 
-					// Add review comments for each issue found
-					for (const file of detailedReview.filesReviewed) {
-						reviewedFiles.add(file.filename);
+					// Step 2: Now, use generateText to analyze the files and identify issues
+					core.info("Step 2: Analyzing files and identifying issues...");
+					const reviewPrompt = `Now that you have examined the files, please review them for issues. For each issue you find, use the add_review_comment tool to add a comment to the specific lines of code.
 
-						if (file.issues && file.issues.length > 0) {
-							for (const issue of file.issues) {
+Focus on:
+- Real bugs and logic errors (high priority)
+- Security vulnerabilities (high priority)
+- Type safety issues
+- Error handling problems
+- Performance concerns
+
+For each issue, provide:
+1. The file name
+2. The line numbers where the issue occurs
+3. A description of the issue
+4. The severity (low, medium, high)
+5. A suggested fix if possible
+
+When you're done reviewing, use the mark_as_done tool with a brief summary.`;
+
+					const { toolCalls: reviewToolCalls } = await generateText({
+						model,
+						system: this.getSystemPrompt(),
+						prompt: reviewPrompt,
+						tools,
+						temperature: 0.2,
+						maxTokens: 8000,
+					});
+
+					// Process review tool calls
+					let reviewSummaryFromMarkAsDone = "";
+					if (reviewToolCalls && reviewToolCalls.length > 0) {
+						core.info(`Processing ${reviewToolCalls.length} review tool calls`);
+						for (const call of reviewToolCalls) {
+							core.info(
+								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
+							);
+							if (call.toolName === TOOL_NAMES.ADD_REVIEW_COMMENT) {
+								commentsMade++;
+								reviewedFiles.add(call.args.file_name);
+								core.info(
+									`Added review comment to ${call.args.file_name} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
+								);
+
+								// Actually add the comment
 								try {
 									await this.fileCommentator(
-										`**${issue.severity.toUpperCase()} Severity Issue**: ${issue.description}${issue.suggestedFix ? `\n\n**Suggested Fix**:\n\`\`\`\n${issue.suggestedFix}\n\`\`\`` : ""}`,
-										file.filename,
-										"RIGHT",
-										issue.lineStart,
-										issue.lineEnd,
-									);
-									commentsMade++;
-									core.info(
-										`Added review comment to ${file.filename} at lines ${issue.lineStart}-${issue.lineEnd}`,
+										call.args.found_error_description,
+										call.args.file_name,
+										call.args.side || "RIGHT",
+										call.args.start_line_number,
+										call.args.end_line_number,
 									);
 								} catch (error) {
 									core.warning(
-										`Failed to add comment to ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+										`Failed to add comment to ${call.args.file_name}: ${error instanceof Error ? error.message : String(error)}`,
 									);
+								}
+							} else if (call.toolName === TOOL_NAMES.MARK_AS_DONE) {
+								reviewSummaryFromMarkAsDone = call.args.brief_summary;
+								core.info(
+									`Marked review as done with summary: ${reviewSummaryFromMarkAsDone.substring(0, 100)}...`,
+								);
+							}
+						}
+					} else {
+						core.warning(
+							"No review tool calls were made. This suggests the model didn't find any issues or didn't properly use the tools.",
+						);
+					}
+
+					// Step 3: Generate a structured summary
+					core.info("Step 3: Generating structured summary...");
+					const summaryPrompt = `Based on your review of the following files:
+
+${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
+
+Please provide a structured summary of your findings. Include a summary for each file, any issues found, and recommendations.
+
+For each issue, please categorize it as one of the following:
+- security: Security vulnerabilities or concerns
+- performance: Performance issues or inefficiencies
+- bug: Logical errors or bugs in the code
+- type-safety: Type safety issues or potential runtime errors
+- error-handling: Inadequate or improper error handling
+- maintainability: Code that is difficult to maintain or understand
+- best-practice: Violations of best practices
+- other: Any other issues that don't fit the above categories
+
+Also, for each issue with a suggested fix, indicate whether the fix should be presented as a GitHub suggested change (suggestDiff: true).`;
+
+					try {
+						const { object: reviewResult } = await generateObject({
+							model,
+							schema: CodeReviewSchema,
+							prompt: summaryPrompt,
+							temperature: 0.1,
+						});
+
+						// Process the structured review to add GitHub suggested changes
+						for (const file of reviewResult.filesReviewed) {
+							for (const issue of file.issues) {
+								if (issue.suggestedFix && issue.suggestDiff) {
+									try {
+										// Format the comment to include GitHub's suggested changes syntax
+										const suggestedChangeComment = this.formatSuggestedChange(
+											issue.description,
+											issue.severity,
+											issue.category,
+											issue.suggestedFix,
+											file.filename,
+											issue.lineStart,
+											issue.lineEnd,
+										);
+
+										// Add the suggested change comment
+										await this.fileCommentator(
+											suggestedChangeComment,
+											file.filename,
+											"RIGHT",
+											issue.lineStart,
+											issue.lineEnd,
+										);
+
+										commentsMade++;
+										core.info(
+											`Added suggested change to ${file.filename} at lines ${issue.lineStart}-${issue.lineEnd}`,
+										);
+									} catch (error) {
+										core.warning(
+											`Failed to add suggested change to ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+										);
+									}
 								}
 							}
 						}
-					}
 
-					// Generate the review summary
-					reviewSummary = `# Code Review Summary\n\n${detailedReview.summary}\n\n## Details\n\n- **Files Reviewed**: ${detailedReview.filesReviewed.map((f) => f.filename).join(", ")}\n- **Issues Found**: ${detailedReview.filesReviewed.reduce((count, file) => count + (file.issues?.length || 0), 0)}\n- **Severity**: ${detailedReview.overallSeverity}\n\n## Recommendations\n\n${detailedReview.recommendations.map((rec) => `- ${rec}`).join("\n")}\n\n## File Summaries\n\n${detailedReview.filesReviewed.map((file) => `### ${file.filename}\n\n${file.summary}${file.issues && file.issues.length > 0 ? `\n\n**Issues**: ${file.issues.length}` : ""}`).join("\n\n")}`;
+						// Generate the review summary with categories
+						reviewSummary = `# Code Review Summary\n\n${reviewResult.summary}\n\n## Details\n\n- **Files Reviewed**: ${reviewResult.filesReviewed.map((f) => f.filename).join(", ")}\n- **Issues Found**: ${reviewResult.filesReviewed.reduce((count, file) => count + file.issues.length, 0)}\n- **Severity**: ${reviewResult.overallSeverity}\n\n## Issues by Category\n\n${this.generateCategorySummary(reviewResult)}\n\n## Recommendations\n\n${reviewResult.recommendations.map((rec) => `- ${rec}`).join("\n")}\n\n## File Summaries\n\n${reviewResult.filesReviewed.map((file) => `### ${file.filename}\n\n${file.summary}${file.issues.length > 0 ? `\n\n**Issues**: ${file.issues.length}` : ""}`).join("\n\n")}`;
+					} catch (error) {
+						core.warning(
+							`Failed to generate structured summary: ${error instanceof Error ? error.message : String(error)}`,
+						);
+
+						// Fallback to using the mark_as_done summary
+						if (reviewSummaryFromMarkAsDone) {
+							reviewSummary = `# Code Review Summary\n\n${reviewSummaryFromMarkAsDone}`;
+						} else {
+							reviewSummary = `# Code Review Summary\n\nReviewed ${reviewedFiles.size} files and found ${commentsMade} issues.`;
+						}
+					}
 
 					// Review completed successfully
 					core.info(
@@ -251,5 +360,68 @@ Please review these files for issues and provide specific actionable comments wh
 				`Failed to complete code review with Anthropic: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
+	}
+
+	/**
+	 * Formats a suggested change comment with GitHub's suggested changes syntax
+	 */
+	formatSuggestedChange(
+		description: string,
+		severity: string,
+		category: string,
+		suggestedFix: string,
+		filename: string,
+		lineStart: number,
+		lineEnd: number,
+	): string {
+		return `**${severity.toUpperCase()} Severity ${category.toUpperCase()} Issue**: ${description}
+
+\`\`\`suggestion
+${suggestedFix}
+\`\`\``;
+	}
+
+	/**
+	 * Generates a summary of issues grouped by category
+	 */
+	generateCategorySummary(reviewResult: CodeReview): string {
+		const categoryCounts: Record<string, number> = {};
+		const categoryIssues: Record<
+			string,
+			Array<{ file: string; description: string; severity: string }>
+		> = {};
+
+		// Count issues by category
+		for (const file of reviewResult.filesReviewed) {
+			for (const issue of file.issues) {
+				const category = issue.category;
+				categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+
+				if (!categoryIssues[category]) {
+					categoryIssues[category] = [];
+				}
+
+				categoryIssues[category].push({
+					file: file.filename,
+					description: issue.description,
+					severity: issue.severity,
+				});
+			}
+		}
+
+		// Generate summary text
+		let summary = "";
+		for (const category of Object.keys(categoryCounts).sort()) {
+			const count = categoryCounts[category];
+			summary += `### ${category.charAt(0).toUpperCase() + category.slice(1)} (${count})\n\n`;
+
+			for (const issue of categoryIssues[category]) {
+				summary += `- **[${issue.severity.toUpperCase()}]** ${issue.file}: ${issue.description}\n`;
+			}
+
+			summary += "\n";
+		}
+
+		return summary;
 	}
 }
