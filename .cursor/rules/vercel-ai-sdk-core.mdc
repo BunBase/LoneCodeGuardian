@@ -1,0 +1,600 @@
+---
+description: Comprehensive guide for Vercel AI SDK Core best practices, covering setup, core functionality, provider management, middleware, error handling, testing, and common pitfalls. This guide provides actionable guidance for developers to build robust and maintainable AI-powered applications.
+globs: **/*.ts?(x)
+alwaysApply: false
+---
+# Vercel AI SDK Core: Best Practices and Development Guide
+
+## Table of Contents
+1. @Introduction to Vercel AI SDK Core
+2. @Project Setup and Structure
+3. @Core Functionality
+   - @Generating Text
+   - @Generating Structured Data
+   - @Tool Calling
+   - @Prompt Engineering
+   - @Settings
+   - @Embeddings
+   - @Image Generation
+4. @Provider Management
+5. @Middleware
+6. @Error Handling
+7. @Testing
+8. @Telemetry
+9. @Common Pitfalls and Gotchas
+10. @Resources and References
+
+## Introduction to Vercel AI SDK Core
+
+The Vercel AI SDK Core is a TypeScript toolkit designed to help developers build AI-powered applications and agents. It provides a unified interface for working with various AI providers and models, making it easier to integrate AI capabilities into your applications.
+
+### Key Features
+
+- **Provider Agnostic**: Work with multiple AI providers (OpenAI, Anthropic, Google, etc.) through a unified API
+- **Type Safety**: Full TypeScript support for better developer experience
+- **Streaming Support**: Stream responses from AI models for better user experience
+- **Structured Data Generation**: Generate and validate structured data from AI models
+- **Tool Calling**: Enable AI models to call tools and functions
+- **Middleware Support**: Enhance AI model behavior with middleware
+- **Testing Utilities**: Test your AI-powered applications with ease
+
+## Project Setup and Structure
+
+### Installation
+
+```bash
+npm install ai
+# Provider-specific packages
+npm install @ai-sdk/openai  # For OpenAI
+npm install @ai-sdk/anthropic  # For Anthropic
+# Add other providers as needed
+```
+
+### Basic Project Structure
+
+```
+project/
+├── src/
+│   ├── app/
+│   │   ├── api/
+│   │   │   └── ai/
+│   │   │       └── route.ts  # AI API routes
+│   │   └── page.tsx  # Frontend components
+│   ├── lib/
+│   │   └── ai.ts  # AI configuration
+│   └── components/
+│       └── Chat.tsx  # AI-powered components
+├── package.json
+└── tsconfig.json
+```
+
+### Environment Configuration
+
+```
+# .env.local
+OPENAI_API_KEY=your_openai_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key
+# Add other provider keys as needed
+```
+
+## Core Functionality
+
+### Generating Text
+
+The `generateText` function is used to generate text from AI models. It returns a Promise that resolves to the generated text.
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { text } = await generateText({
+  model: openai('gpt-4'),
+  prompt: 'Write a short story about a robot learning to paint.',
+});
+
+console.log(text);
+```
+
+For streaming responses, use the `streamText` function:
+
+```typescript
+import { streamText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { textStream } = await streamText({
+  model: openai('gpt-4'),
+  prompt: 'Write a short story about a robot learning to paint.',
+});
+
+for await (const chunk of textStream) {
+  process.stdout.write(chunk);
+}
+```
+
+### Generating Structured Data
+
+The `generateObject` function generates structured data from AI models and validates it against a schema.
+
+```typescript
+import { generateObject } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+
+const personSchema = z.object({
+  name: z.string(),
+  age: z.number(),
+  hobbies: z.array(z.string()),
+});
+
+const { object } = await generateObject({
+  model: openai('gpt-4'),
+  schema: personSchema,
+  prompt: 'Generate a profile for a fictional person.',
+});
+
+console.log(object);
+```
+
+For streaming structured data:
+
+```typescript
+import { streamObject } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+
+const personSchema = z.object({
+  name: z.string(),
+  age: z.number(),
+  hobbies: z.array(z.string()),
+});
+
+const { objectStream } = await streamObject({
+  model: openai('gpt-4'),
+  schema: personSchema,
+  prompt: 'Generate a profile for a fictional person.',
+});
+
+for await (const partialObject of objectStream) {
+  console.log(partialObject);
+}
+```
+
+### Tool Calling
+
+The `tool` function allows AI models to call tools and functions.
+
+```typescript
+import { generateText, tool } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const getWeather = tool({
+  name: 'getWeather',
+  description: 'Get the current weather for a location',
+  parameters: {
+    type: 'object',
+    properties: {
+      location: {
+        type: 'string',
+        description: 'The city and state, e.g. San Francisco, CA',
+      },
+    },
+    required: ['location'],
+  },
+  execute: async ({ location }) => {
+    // Simulate weather API call
+    return { temperature: 72, condition: 'sunny' };
+  },
+});
+
+const { text } = await generateText({
+  model: openai('gpt-4'),
+  prompt: 'What is the weather in San Francisco?',
+  tools: [getWeather],
+});
+
+console.log(text);
+```
+
+### Prompt Engineering
+
+The AI SDK Core provides utilities for prompt engineering:
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { text } = await generateText({
+  model: openai('gpt-4'),
+  prompt: [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'Tell me about the solar system.' },
+  ],
+});
+
+console.log(text);
+```
+
+### Settings
+
+Configure model settings for generation:
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { text } = await generateText({
+  model: openai('gpt-4'),
+  prompt: 'Write a poem about autumn.',
+  settings: {
+    temperature: 0.7,
+    maxTokens: 500,
+  },
+});
+
+console.log(text);
+```
+
+### Embeddings
+
+Generate embeddings for text:
+
+```typescript
+import { embed } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { embedding } = await embed({
+  model: openai.embedding('text-embedding-3-small'),
+  value: 'The quick brown fox jumps over the lazy dog.',
+});
+
+console.log(embedding);
+```
+
+For multiple embeddings:
+
+```typescript
+import { embedMany } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { embeddings } = await embedMany({
+  model: openai.embedding('text-embedding-3-small'),
+  values: [
+    'The quick brown fox jumps over the lazy dog.',
+    'The lazy dog is jumped over by the quick brown fox.',
+  ],
+});
+
+console.log(embeddings);
+```
+
+### Image Generation
+
+Generate images with AI models:
+
+```typescript
+import { generateImage } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { image } = await generateImage({
+  model: openai.image('dall-e-3'),
+  prompt: 'A futuristic city with flying cars and tall skyscrapers.',
+});
+
+console.log(image.url);
+```
+
+## Provider Management
+
+### Working with Multiple Providers
+
+The AI SDK Core allows you to work with multiple providers through a provider registry:
+
+```typescript
+import { generateText } from 'ai';
+import { anthropic } from '@ai-sdk/anthropic';
+import { createOpenAI } from '@ai-sdk/openai';
+import { experimental_createProviderRegistry as createProviderRegistry } from 'ai';
+
+// Create a provider registry
+const registry = createProviderRegistry({
+  // Register provider with prefix and default setup
+  anthropic,
+  
+  // Register provider with prefix and custom setup
+  openai: createOpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  }),
+});
+
+// Use a language model from the registry
+const { text } = await generateText({
+  model: registry.languageModel('openai:gpt-4'),
+  prompt: 'Explain quantum computing in simple terms.',
+});
+
+console.log(text);
+```
+
+### Custom Providers
+
+Create custom providers with pre-configured settings:
+
+```typescript
+import { customProvider } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const customOpenAI = customProvider({
+  provider: openai,
+  models: {
+    // Alias for a model
+    'gpt4': 'gpt-4',
+    
+    // Pre-configured model settings
+    'creative-gpt4': {
+      model: 'gpt-4',
+      settings: {
+        temperature: 0.9,
+        maxTokens: 1000,
+      },
+    },
+  },
+});
+
+const { text } = await generateText({
+  model: customOpenAI('creative-gpt4'),
+  prompt: 'Write a creative story about time travel.',
+});
+
+console.log(text);
+```
+
+## Middleware
+
+Enhance language model behavior with middleware:
+
+```typescript
+import { generateText, wrapLanguageModel, LanguageModelV1Middleware } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+// Create a middleware that logs prompts and responses
+const loggingMiddleware: LanguageModelV1Middleware = {
+  async handleRequest({ prompt, settings }, next) {
+    console.log('Prompt:', prompt);
+    const response = await next({ prompt, settings });
+    console.log('Response:', response.text);
+    return response;
+  },
+};
+
+// Apply middleware to a model
+const modelWithLogging = wrapLanguageModel(openai('gpt-4'), [loggingMiddleware]);
+
+const { text } = await generateText({
+  model: modelWithLogging,
+  prompt: 'Explain how rainbows form.',
+});
+
+console.log(text);
+```
+
+## Error Handling
+
+Handle errors when working with AI models:
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+try {
+  const { text } = await generateText({
+    model: openai('gpt-4'),
+    prompt: 'Explain the theory of relativity.',
+  });
+  
+  console.log(text);
+} catch (error) {
+  console.error('Error generating text:', error);
+  
+  // Handle specific error types
+  if (error.name === 'AIProviderError') {
+    console.error('Provider error:', error.message);
+  } else if (error.name === 'AITimeoutError') {
+    console.error('Request timed out');
+  }
+}
+```
+
+## Testing
+
+Test AI-powered applications with mock models:
+
+```typescript
+import { generateText, simulateReadableStream } from 'ai';
+import { MockLanguageModelV1 } from 'ai/test';
+
+// Create a mock language model
+const mockModel = new MockLanguageModelV1({
+  doGenerate: async () => ({
+    rawCall: { rawPrompt: null, rawSettings: {} },
+    finishReason: 'stop',
+    usage: { promptTokens: 10, completionTokens: 20 },
+    text: 'This is a mock response.',
+  }),
+});
+
+// Test text generation
+const { text } = await generateText({
+  model: mockModel,
+  prompt: 'Test prompt',
+});
+
+console.log(text); // 'This is a mock response.'
+```
+
+For testing streaming:
+
+```typescript
+import { streamText, simulateReadableStream } from 'ai';
+import { MockLanguageModelV1 } from 'ai/test';
+
+const mockModel = new MockLanguageModelV1({
+  doStream: async () => ({
+    stream: simulateReadableStream({
+      chunks: [
+        { type: 'text-delta', textDelta: 'Hello' },
+        { type: 'text-delta', textDelta: ', ' },
+        { type: 'text-delta', textDelta: 'world!' },
+        {
+          type: 'finish',
+          finishReason: 'stop',
+          logprobs: undefined,
+          usage: { completionTokens: 10, promptTokens: 3 },
+        },
+      ],
+    }),
+    rawCall: { rawPrompt: null, rawSettings: {} },
+  }),
+});
+
+const { textStream } = await streamText({
+  model: mockModel,
+  prompt: 'Test prompt',
+});
+
+for await (const chunk of textStream) {
+  console.log(chunk);
+}
+```
+
+## Telemetry
+
+The AI SDK uses OpenTelemetry for collecting telemetry data:
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { text } = await generateText({
+  model: openai('gpt-4'),
+  prompt: 'Tell me a joke.',
+  experimental_telemetry: {
+    isEnabled: true,
+  },
+});
+
+console.log(text);
+```
+
+## Common Pitfalls and Gotchas
+
+### Rate Limiting
+
+AI providers often have rate limits. Implement proper error handling and retry logic to handle rate limiting errors.
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+async function generateWithRetry(prompt, maxRetries = 3) {
+  let retries = 0;
+  
+  while (retries < maxRetries) {
+    try {
+      const { text } = await generateText({
+        model: openai('gpt-4'),
+        prompt,
+      });
+      
+      return text;
+    } catch (error) {
+      if (error.name === 'AIRateLimitError' && retries < maxRetries - 1) {
+        retries++;
+        console.log(`Rate limited. Retrying (${retries}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+```
+
+### Token Limits
+
+AI models have token limits. Be mindful of the length of your prompts and expected responses.
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const { text } = await generateText({
+  model: openai('gpt-4'),
+  prompt: 'Summarize this article in 100 words or less: ' + longArticle,
+  settings: {
+    maxTokens: 150, // Limit response length
+  },
+});
+
+console.log(text);
+```
+
+### Cost Management
+
+AI API calls can be expensive. Implement cost tracking and limits to manage expenses.
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+// Simple cost tracking middleware
+const costTrackingMiddleware = {
+  async handleRequest({ prompt, settings }, next) {
+    const startTime = Date.now();
+    const response = await next({ prompt, settings });
+    const endTime = Date.now();
+    
+    // Estimate cost based on token usage
+    const promptTokens = response.usage?.promptTokens || 0;
+    const completionTokens = response.usage?.completionTokens || 0;
+    const estimatedCost = (promptTokens * 0.00001) + (completionTokens * 0.00003);
+    
+    console.log(`Request took ${endTime - startTime}ms`);
+    console.log(`Estimated cost: $${estimatedCost.toFixed(6)}`);
+    
+    return response;
+  },
+};
+
+const modelWithCostTracking = wrapLanguageModel(openai('gpt-4'), [costTrackingMiddleware]);
+
+const { text } = await generateText({
+  model: modelWithCostTracking,
+  prompt: 'Explain quantum computing.',
+});
+
+console.log(text);
+```
+
+## Resources and References
+
+### Official Documentation
+
+- @AI SDK Documentation
+- @AI SDK Core Reference
+- @AI SDK GitHub Repository
+
+### Provider Documentation
+
+- @OpenAI API Reference
+- @Anthropic API Reference
+- @Google AI API Reference
+
+### Community Resources
+
+- @AI SDK GitHub Discussions
+- @Vercel AI SDK Cookbook
+
+### Learning Resources
+
+- @AI SDK Documentation in Markdown Format
+- @Vercel AI SDK Playground 
