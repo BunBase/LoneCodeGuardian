@@ -64,7 +64,6 @@ export class GoogleAgent extends AIAgent {
 						system: this.getSystemPrompt(),
 						prompt,
 						tools,
-						maxTokens: 8000, // Increased token limit for complex reviews
 						temperature: 0.2, // Lower temperature for more focused reviews
 					});
 

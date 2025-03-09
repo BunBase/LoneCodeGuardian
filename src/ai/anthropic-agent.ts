@@ -84,7 +84,18 @@ export class AnthropicAgent extends AIAgent {
 					);
 
 					// Prepare the prompt with context about the changed files
-					const prompt = `Here are the changed files in the pull request that need review (${changedFiles.length} files): ${JSON.stringify(simpleChangedFiles, null, 2)}\n\nPlease review these files for issues and provide specific actionable comments where appropriate. If you need to see a file's content, use the get_file_content tool. When you're done reviewing, use the mark_as_done tool with a brief summary.`;
+					const prompt = `Here are the changed files in the pull request that need review (${changedFiles.length} files):
+
+${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
+
+IMPORTANT INSTRUCTIONS:
+1. You MUST use the get_file_content tool to examine EACH file before commenting on it
+2. You MUST only review the files listed above - do not make up or reference non-existent files
+3. You MUST base your review ONLY on the actual content of these files
+4. You MUST use the exact filenames as listed above in your review
+5. You MUST NOT mention files like "main.js", "auth.py", "database.sql", or any other files that are not in the list above
+
+Please review these files for issues and provide specific actionable comments where appropriate. If you need to see a file's content, use the get_file_content tool. When you're done reviewing, use the mark_as_done tool with a brief summary.`;
 
 					core.info(
 						`Sending prompt to Anthropic model with ${simpleChangedFiles.length} files`,
@@ -96,7 +107,6 @@ export class AnthropicAgent extends AIAgent {
 						system: this.getSystemPrompt(),
 						prompt,
 						tools,
-						maxTokens: 8000, // Increased token limit for complex reviews
 						temperature: 0.2, // Lower temperature for more focused reviews
 					});
 
@@ -144,7 +154,13 @@ export class AnthropicAgent extends AIAgent {
 
 					// Generate structured review results using generateObject
 					try {
-						const structuredPrompt = `Based on your review of ${changedFiles.length} files, please provide a structured summary of your findings. Include the number of issues found, the files you reviewed, and any recommendations.`;
+						const structuredPrompt = `Based on your review of the following ${changedFiles.length} files:
+
+${changedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
+
+Please provide a structured summary of your findings. Include the number of issues found, the files you reviewed, and any recommendations.
+
+IMPORTANT: You MUST only include the actual files listed above in your review summary. DO NOT make up or reference non-existent files.`;
 
 						core.info("Generating structured review results...");
 						const { object: reviewResult } = await generateObject({
@@ -153,6 +169,19 @@ export class AnthropicAgent extends AIAgent {
 							prompt: structuredPrompt,
 							temperature: 0.1, // Lower temperature for more consistent structured output
 						});
+
+						// Validate that the files in the review result are actual files from the PR
+						const actualFilenames = changedFiles.map((file) => file.filename);
+						const validatedFiles = reviewResult.filesReviewed.filter((file) =>
+							actualFilenames.includes(file),
+						);
+
+						if (validatedFiles.length !== reviewResult.filesReviewed.length) {
+							core.warning(
+								"Review mentioned non-existent files. Filtering to only include actual files.",
+							);
+							reviewResult.filesReviewed = validatedFiles;
+						}
 
 						// Log structured review results
 						core.info("Structured review results:");

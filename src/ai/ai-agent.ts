@@ -49,9 +49,11 @@ Skip and do not comment on (but you can mention these in the summary):
 - Code maintainability issues
 - Best practices
 
+CRITICAL INSTRUCTION: You MUST only review the ACTUAL files provided in the pull request. DO NOT make up or reference non-existent files. Your review MUST be based ONLY on the actual content of the files you examine using the get_file_content tool.
+
 IMPORTANT: You MUST use the provided tools to complete your review. The tools available to you are:
 
-1. get_file_content - Use this tool to retrieve the content of a file. You MUST use this tool to examine files before making comments.
+1. get_file_content - Use this tool to retrieve the content of a file. You MUST use this tool to examine EACH file before making comments.
    Example: get_file_content("src/index.ts", 1, 100) to get lines 1-100 of src/index.ts
 
 2. add_review_comment - Use this tool to add a specific, actionable comment to the code.
@@ -79,6 +81,7 @@ When complete, call the mark_as_done tool with a brief summary of the review. Th
 - Any patterns or recurring issues observed
 - DO NOT ask questions or request more information in the summary
 - DO NOT mention "I couldn't see the changes" - use the tools to retrieve any content you need
+- ONLY mention files that were actually in the PR - do not reference non-existent files
 
 Lines are 1-indexed. Do not comment on trivial issues or style preferences.
 Be concise but thorough in your review.
@@ -233,12 +236,11 @@ Be concise but thorough in your review.
 							"The ending line from the file content to retrieve, counting from one",
 						),
 				}),
-				execute: async (args: any) => {
-					const typedArgs = args as GetFileContentArgs;
+				execute: async (args: GetFileContentArgs) => {
 					return await this.getFileContentWithCache(
-						typedArgs.path_to_file,
-						typedArgs.start_line_number,
-						typedArgs.end_line_number,
+						args.path_to_file,
+						args.start_line_number,
+						args.end_line_number,
 					);
 				},
 			},
@@ -276,14 +278,13 @@ Be concise but thorough in your review.
 							"In a split diff view, the side of the diff that the pull request's changes appear on. Can be LEFT or RIGHT. Use LEFT only for deletions. Use RIGHT for additions/changes! For a multi-line comment, side represents whether the last line of the comment range is a deletion or addition.",
 						),
 				}),
-				execute: async (args: any) => {
-					const typedArgs = args as AddReviewCommentArgs;
+				execute: async (args: AddReviewCommentArgs) => {
 					return await this.addReviewComment(
-						typedArgs.file_name,
-						typedArgs.start_line_number,
-						typedArgs.end_line_number,
-						typedArgs.found_error_description,
-						typedArgs.side || REVIEW_SIDES.RIGHT,
+						args.file_name,
+						args.start_line_number,
+						args.end_line_number,
+						args.found_error_description,
+						args.side,
 					);
 				},
 			},
@@ -298,9 +299,8 @@ Be concise but thorough in your review.
 							"A brief summary of the changes reviewed. Do not repeat comments. Focus on overall quality and any patterns observed.",
 						),
 				}),
-				execute: async (args: any) => {
-					const typedArgs = args as MarkAsDoneArgs;
-					return typedArgs.brief_summary;
+				execute: async (args: MarkAsDoneArgs) => {
+					return args.brief_summary;
 				},
 			},
 		};
