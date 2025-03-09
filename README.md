@@ -18,7 +18,34 @@ A GitHub Action that performs automated code reviews on pull requests using AI m
 
 - [Bun](https://bun.sh/) installed
 - API keys for the AI providers you want to use (Anthropic and/or Google)
-- GitHub token for API access
+
+### GitHub Actions for Testing
+
+This repository includes several GitHub Actions workflows to help test and validate the action:
+
+1. **Self Code Review** - Automatically runs the AI code review action on pull requests to this repository.
+   - Triggered when PRs are opened, synchronized, or reopened
+   - Uses the Anthropic provider by default
+   - Requires the `ANTHROPIC_API_KEY` secret to be set in the repository
+
+2. **Test Action** - Allows manual testing of the action on specific PRs.
+   - Can be triggered manually with a PR number
+   - Also runs automatically every day at midnight on the latest PR
+   - Useful for testing changes to the action
+
+3. **Test Suite** - Runs the test suite to ensure the action is working correctly.
+   - Triggered on pushes to main/master and on pull requests
+   - Runs the test suite and verifies the build
+
+To use these workflows, you need to:
+
+1. Set up the required secrets in your repository:
+   - `ANTHROPIC_API_KEY` - Your Anthropic API key (for Claude)
+   - `GOOGLE_API_KEY` - Your Google API key (if using Gemini)
+
+2. For manual testing, go to the "Actions" tab, select "Test AI Code Review Action", and click "Run workflow". Enter the PR number you want to review.
+
+For detailed setup instructions, see [GitHub Actions Setup Guide](docs/github-actions-setup.md).
 
 ### Setup
 
