@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { InputOptions } from "@actions/core";
 import type { AIAgent } from "../src/ai/ai-agent";
 import type { ChangedFile } from "../src/types/constants";
@@ -21,7 +21,6 @@ type TestInputs = Record<string, string>;
 // Ensure mock inputs have all required values
 const testInputs: TestInputs = {
 	...mockInputs,
-	token: "mock-github-token",
 	anthropic_api_key: "mock-anthropic-api-key",
 	google_api_key: "mock-google-api-key",
 };
@@ -63,6 +62,9 @@ describe("InputProcessor", () => {
 	>;
 
 	beforeEach(async () => {
+		// Set up environment variables for testing
+		process.env.GITHUB_TOKEN = "mock-github-token";
+
 		// Create fresh mocks for each test
 		mockCoreModule = createCoreMocks();
 		mockGitHubAPI = createGitHubAPIMocks();
@@ -82,6 +84,11 @@ describe("InputProcessor", () => {
 		} catch (error) {
 			console.error("Error importing InputProcessor:", error);
 		}
+	});
+
+	afterEach(() => {
+		// Clean up environment variables
+		process.env.GITHUB_TOKEN = "";
 	});
 
 	it("should create an InputProcessor instance", async () => {

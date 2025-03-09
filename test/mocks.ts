@@ -8,7 +8,6 @@ export const mockInputs: Record<string, string> = {
 	repo: "test-repo",
 	owner: "test-owner",
 	pr_number: "123",
-	token: process.env.GITHUB_TOKEN || "",
 	ai_provider: "anthropic", // or 'google'
 	anthropic_api_key: process.env.ANTHROPIC_API_KEY || "",
 	anthropic_model: "claude-3-sonnet-20240229",

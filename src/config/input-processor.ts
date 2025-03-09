@@ -25,7 +25,6 @@ const ActionInputSchema = z.object({
 		.number()
 		.int()
 		.positive("Pull request number must be a valid positive number"),
-	token: z.string().min(1, "GitHub token is required"),
 	ai_provider: z.enum(["anthropic", "google"], {
 		errorMap: () => ({
 			message: `AI provider must be one of: ${SUPPORTED_PROVIDERS.join(", ")}`,
@@ -73,7 +72,11 @@ export class InputProcessor {
 		this.repo = inputs.repo;
 		this.owner = inputs.owner;
 		this.pullNumber = inputs.pr_number;
-		this.githubToken = inputs.token;
+		// Get GitHub token from environment instead of inputs
+		this.githubToken = process.env.GITHUB_TOKEN || "";
+		if (!this.githubToken) {
+			core.warning("GITHUB_TOKEN not found in environment. Using empty token.");
+		}
 		this.aiProvider = inputs.ai_provider;
 		this.apiKey = inputs.api_key;
 		this.model = inputs.model;
@@ -119,7 +122,6 @@ export class InputProcessor {
 					required: true,
 					trimWhitespace: true,
 				}),
-				token: core.getInput("token", { required: true, trimWhitespace: true }),
 				ai_provider: core.getInput("ai_provider", {
 					required: true,
 					trimWhitespace: true,
