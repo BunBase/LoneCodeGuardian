@@ -72,11 +72,25 @@ export class InputProcessor {
 		this.repo = inputs.repo;
 		this.owner = inputs.owner;
 		this.pullNumber = inputs.pr_number;
-		// Get GitHub token from environment instead of inputs
-		this.githubToken = process.env.GITHUB_TOKEN || "";
+
+		// Get GitHub token from environment
+		// Try multiple possible environment variables where the token might be stored
+		this.githubToken =
+			process.env.GITHUB_TOKEN ||
+			process.env.INPUT_TOKEN ||
+			process.env.INPUT_GITHUB_TOKEN ||
+			"";
+
 		if (!this.githubToken) {
 			core.warning("GITHUB_TOKEN not found in environment. Using empty token.");
+			core.warning("Make sure the workflow has the correct permissions set.");
+			core.warning(
+				"Add 'permissions: { contents: read, pull-requests: write }' to your workflow.",
+			);
+		} else {
+			core.info("GitHub token found in environment.");
 		}
+
 		this.aiProvider = inputs.ai_provider;
 		this.apiKey = inputs.api_key;
 		this.model = inputs.model;
