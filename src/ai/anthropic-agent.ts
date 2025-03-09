@@ -125,12 +125,21 @@ export class AnthropicAgent extends AIAgent {
 
 					// Step 1: First, use generateText to fetch file content
 					core.info("Step 1: Fetching file content...");
+
+					// Create a more explicit prompt for fetching file content
 					const fetchPrompt = `I need to review the following files in a pull request:
 
 ${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
 
-Please use the get_file_content tool to fetch the content of each file so we can review them properly.`;
+IMPORTANT: You MUST use the get_file_content tool to fetch the ENTIRE content of EACH file listed above.
+For each file:
+1. Call get_file_content with the file path
+2. Use a large enough range to get the full file (e.g., lines 1-1000)
+3. Confirm you have fetched the content before proceeding
 
+Please fetch the content of all files now.`;
+
+					// Fetch file content with a more explicit prompt
 					const { toolCalls: fetchToolCalls } = await generateText({
 						model,
 						system: this.getSystemPrompt(),
@@ -140,7 +149,8 @@ Please use the get_file_content tool to fetch the content of each file so we can
 						maxTokens: 4000,
 					});
 
-					// Process fetch tool calls
+					// Process fetch tool calls and store file contents for later use
+					const fetchedFileContents: Record<string, string> = {};
 					if (fetchToolCalls && fetchToolCalls.length > 0) {
 						core.info(`Processing ${fetchToolCalls.length} fetch tool calls`);
 						for (const call of fetchToolCalls) {
@@ -148,20 +158,65 @@ Please use the get_file_content tool to fetch the content of each file so we can
 								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
 							);
 							if (call.toolName === TOOL_NAMES.GET_FILE_CONTENT) {
-								core.info(
-									`Retrieved content for ${call.args.path_to_file} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
-								);
+								const filePath = call.args.path_to_file;
+								// Store the fetched content for later use
+								try {
+									const content = await this.fileContentGetter(filePath);
+									fetchedFileContents[filePath] = content;
+									core.info(
+										`Retrieved and stored content for ${filePath} (${content.length} characters)`,
+									);
+								} catch (error) {
+									core.warning(
+										`Failed to fetch content for ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								}
 							}
 						}
 					} else {
 						core.warning(
 							"No fetch tool calls were made. This may affect the quality of the review.",
 						);
+
+						// Fallback: Manually fetch content for all files
+						core.info("Manually fetching file content as fallback...");
+						for (const file of simpleChangedFiles) {
+							try {
+								const content = await this.fileContentGetter(file.filename);
+								fetchedFileContents[file.filename] = content;
+								core.info(
+									`Manually retrieved content for ${file.filename} (${content.length} characters)`,
+								);
+							} catch (error) {
+								core.warning(
+									`Failed to manually fetch content for ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+								);
+							}
+						}
 					}
 
 					// Step 2: Now, use generateText to analyze the files and identify issues
 					core.info("Step 2: Analyzing files and identifying issues...");
-					const reviewPrompt = `Now that you have examined the files, please review them for issues. For each issue you find, use the add_review_comment tool to add a comment to the specific lines of code.
+
+					// Create a more explicit prompt that includes the file content
+					let reviewPrompt = `I need you to review the following files in a pull request:
+
+${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
+
+Here is the content of each file:
+
+`;
+
+					// Add the content of each file to the prompt
+					for (const [filePath, content] of Object.entries(
+						fetchedFileContents,
+					)) {
+						// Add a section for each file with its content
+						reviewPrompt += `\n\n=== FILE: ${filePath} ===\n\n\`\`\`typescript\n${content}\n\`\`\`\n`;
+					}
+
+					// Add instructions for the review
+					reviewPrompt += `\n\nPlease review these files for issues. For each issue you find, use the add_review_comment tool to add a comment to the specific lines of code.
 
 Focus on:
 - Real bugs and logic errors (high priority)
@@ -179,6 +234,16 @@ For each issue, provide:
 
 When you're done reviewing, use the mark_as_done tool with a brief summary.`;
 
+					// Check if the prompt is too long and truncate if necessary
+					const maxPromptLength = 100000; // Set a reasonable limit
+					if (reviewPrompt.length > maxPromptLength) {
+						core.warning(
+							`Review prompt is too long (${reviewPrompt.length} chars). Truncating to ${maxPromptLength} chars.`,
+						);
+						reviewPrompt = reviewPrompt.substring(0, maxPromptLength);
+					}
+
+					// Analyze the files with the content included in the prompt
 					const { toolCalls: reviewToolCalls } = await generateText({
 						model,
 						system: this.getSystemPrompt(),
@@ -232,11 +297,30 @@ When you're done reviewing, use the mark_as_done tool with a brief summary.`;
 
 					// Step 3: Generate a structured summary
 					core.info("Step 3: Generating structured summary...");
-					const summaryPrompt = `Based on your review of the following files:
+
+					// Create a summary prompt that includes file content summaries
+					let summaryPrompt = `Based on your review of the following files:
 
 ${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
 
-Please provide a structured summary of your findings. Include a summary for each file, any issues found, and recommendations.
+Here are brief summaries of each file's content:
+
+`;
+
+					// Add a summary of each file's content
+					for (const [filePath, content] of Object.entries(
+						fetchedFileContents,
+					)) {
+						// Add a brief description of each file (first 500 chars)
+						const contentPreview =
+							content.length > 500
+								? `${content.substring(0, 500)}...`
+								: content;
+						summaryPrompt += `\n\n=== FILE: ${filePath} ===\nPreview: ${contentPreview}\n`;
+					}
+
+					// Add instructions for the structured summary
+					summaryPrompt += `\n\nPlease provide a structured summary of your findings. Include a summary for each file, any issues found, and recommendations.
 
 For each issue, please categorize it as one of the following:
 - security: Security vulnerabilities or concerns
