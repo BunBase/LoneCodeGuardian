@@ -124,20 +124,21 @@ To test with real data, you can modify the `test/mocks.ts` file to include real 
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `token` | GitHub token with permissions to read and comment on pull requests | Yes | - |
+| `owner` | Repository owner | Yes | - |
+| `repo` | Repository name | Yes | - |
+| `pr_number` | Pull request number | Yes | - |
 | `ai_provider` | AI provider to use (anthropic or google) | Yes | `anthropic` |
 | `anthropic_api_key` | Anthropic API key (required if using Anthropic provider) | No | - |
 | `anthropic_model` | Anthropic model name | No | `claude-3-5-sonnet-20240620` |
 | `google_api_key` | Google AI API key (required if using Google provider) | No | - |
 | `google_model` | Google model name | No | `gemini-2.0-flash` |
-| `owner` | Repository owner | Yes | - |
-| `repo` | Repository name | Yes | - |
-| `pr_number` | Pull request number | Yes | - |
 | `include_extensions` | File extensions to include in the review (comma-separated, e.g., ".js,.ts,.py") | No | - |
 | `exclude_extensions` | File extensions to exclude from the review (comma-separated) | No | - |
 | `include_paths` | Paths to include in the review (comma-separated) | No | - |
 | `exclude_paths` | Paths to exclude from review (comma-separated, e.g., "test/,docs/") | No | - |
 | `fail_action_if_review_failed` | If set to true, the action fails when the review process fails | No | `false` |
+
+Note: The GitHub token is automatically provided to the action based on the job's permissions configuration. You don't need to pass it as an input.
 
 ## Example Usage
 
@@ -151,6 +152,11 @@ on:
 jobs:
   ai-code-review:
     runs-on: ubuntu-latest
+    # Required permissions for the action to work
+    permissions:
+      contents: read
+      pull-requests: write
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -161,7 +167,6 @@ jobs:
           repo: ${{ github.repository_name }}
           owner: ${{ github.repository_owner }}
           pr_number: ${{ github.event.pull_request.number }}
-          token: ${{ secrets.GITHUB_TOKEN }}
           ai_provider: anthropic
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           anthropic_model: claude-3-sonnet-20240229
@@ -170,6 +175,8 @@ jobs:
           include_paths: src/
           exclude_paths: node_modules/,dist/
 ```
+
+Note: The action automatically uses the `GITHUB_TOKEN` with the permissions specified in the job configuration. You don't need to pass it explicitly.
 
 ## How It Works
 
