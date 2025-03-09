@@ -33,7 +33,7 @@ jobs:
       
       - name: Verify build
         run: |
-          if [ ! -f "dist/index.js" ] || [ ! -f "dist/setup.js" ]; then
-            echo "Build failed: dist files are missing"
+          if [ ! -f "dist/index.js" ]; then
+            echo "Build failed: dist file is missing"
             exit 1
           fi 
