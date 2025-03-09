@@ -7,7 +7,6 @@
 		"build": "bun build ./src/index.ts --outdir ./dist --target node",
 		"lint": "biome lint .",
 		"format": "biome format . --write",
-		"typecheck": "tsc --noEmit",
 		"test": "bun test",
 		"test:local": "bun run test/local-test.ts"
 	},
