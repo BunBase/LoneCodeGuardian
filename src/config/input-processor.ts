@@ -393,26 +393,43 @@ export class InputProcessor {
 			throw new Error("GitHub API or commit information not available");
 		}
 
+		// Set up file content getter
 		this.fileContentGetter = async (filePath: string): Promise<string> => {
 			try {
-				if (this.baseCommit && this.headCommit) {
-					return await this.githubAPI.getContent(
-						this.owner,
-						this.repo,
-						this.baseCommit,
-						this.headCommit,
-						filePath,
+				core.info(`Getting content for file: ${filePath}`);
+
+				if (!this.baseCommit || !this.headCommit) {
+					throw new Error("Missing commit information");
+				}
+
+				const content = await this.githubAPI.getContent(
+					this.owner,
+					this.repo,
+					this.baseCommit,
+					this.headCommit,
+					filePath,
+				);
+
+				if (content === "[File content unavailable]") {
+					core.warning(
+						`Could not retrieve content for ${filePath}. This may affect the quality of the review.`,
+					);
+				} else {
+					core.info(
+						`Successfully retrieved content for ${filePath} (${content.length} characters)`,
 					);
 				}
-				return "[Missing commit information]";
+
+				return content;
 			} catch (error) {
-				core.warning(
-					`Error getting content for ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+				core.error(
+					`Error getting file content for ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
 				);
 				return `[Error retrieving file content: ${error instanceof Error ? error.message : String(error)}]`;
 			}
 		};
 
+		// Set up file commentator
 		this.fileCommentator = async (
 			comment: string,
 			filePath: string,
@@ -421,27 +438,46 @@ export class InputProcessor {
 			endLineNumber: number,
 		): Promise<void> => {
 			try {
-				if (this.headCommit) {
-					await this.githubAPI.createReviewComment(
-						this.owner,
-						this.repo,
-						this.pullNumber,
-						this.headCommit,
-						comment,
-						filePath,
-						side,
-						startLineNumber,
-						endLineNumber,
-					);
-					core.info(
-						`Added review comment to ${filePath} (lines ${startLineNumber}-${endLineNumber})`,
-					);
-				} else {
-					throw new Error("Missing head commit information");
+				core.info(
+					`Adding review comment to ${filePath} at lines ${startLineNumber}-${endLineNumber} (side: ${side})`,
+				);
+
+				// Validate inputs
+				if (!comment || comment.trim() === "") {
+					throw new Error("Comment text cannot be empty");
 				}
+
+				if (!filePath || filePath.trim() === "") {
+					throw new Error("File path cannot be empty");
+				}
+
+				if (!this.headCommit) {
+					throw new Error("Head commit information not available");
+				}
+
+				if (startLineNumber < 1 || endLineNumber < startLineNumber) {
+					throw new Error(
+						`Invalid line numbers: ${startLineNumber}-${endLineNumber}`,
+					);
+				}
+
+				// Add the comment
+				await this.githubAPI.createReviewComment(
+					this.owner,
+					this.repo,
+					this.pullNumber,
+					this.headCommit,
+					comment,
+					filePath,
+					side,
+					startLineNumber,
+					endLineNumber,
+				);
+
+				core.info(`Successfully added review comment to ${filePath}`);
 			} catch (error) {
-				core.warning(
-					`Error creating review comment: ${error instanceof Error ? error.message : String(error)}`,
+				core.error(
+					`Error adding review comment to ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
 				);
 				throw error;
 			}

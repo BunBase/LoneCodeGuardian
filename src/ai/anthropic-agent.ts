@@ -33,6 +33,13 @@ export class AnthropicAgent extends AIAgent {
 		);
 		core.info(`Processing ${changedFiles.length} changed files...`);
 
+		// Log the files being reviewed
+		for (const file of changedFiles) {
+			core.info(
+				`File to review: ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`,
+			);
+		}
+
 		try {
 			// Prepare for review
 			const simpleChangedFiles = changedFiles.map((file) => ({
@@ -50,6 +57,11 @@ export class AnthropicAgent extends AIAgent {
 
 			// Set up tools for Anthropic
 			const tools = this.getTools();
+
+			// Log the tools being provided to the model
+			core.info(
+				`Providing ${Object.keys(tools).length} tools to the model: ${Object.keys(tools).join(", ")}`,
+			);
 
 			// Create the Anthropic model with the API key
 			const anthropicProvider = createAnthropic({
@@ -74,6 +86,10 @@ export class AnthropicAgent extends AIAgent {
 					// Prepare the prompt with context about the changed files
 					const prompt = `Here are the changed files in the pull request that need review (${changedFiles.length} files): ${JSON.stringify(simpleChangedFiles, null, 2)}\n\nPlease review these files for issues and provide specific actionable comments where appropriate. If you need to see a file's content, use the get_file_content tool. When you're done reviewing, use the mark_as_done tool with a brief summary.`;
 
+					core.info(
+						`Sending prompt to Anthropic model with ${simpleChangedFiles.length} files`,
+					);
+
 					// Generate the review using the AI model
 					const { text, toolCalls } = await generateText({
 						model,
@@ -84,27 +100,53 @@ export class AnthropicAgent extends AIAgent {
 						temperature: 0.2, // Lower temperature for more focused reviews
 					});
 
+					core.info(
+						`Received response from Anthropic model with ${toolCalls?.length || 0} tool calls`,
+					);
+
 					// Count files that were reviewed and comments made
-					if (toolCalls) {
+					if (toolCalls && toolCalls.length > 0) {
+						core.info(`Processing ${toolCalls.length} tool calls`);
 						for (const call of toolCalls) {
+							core.info(
+								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
+							);
 							if (call.toolName === TOOL_NAMES.ADD_REVIEW_COMMENT) {
 								commentsMade++;
 								reviewedFiles.add(call.args.file_name);
+								core.info(
+									`Added review comment to ${call.args.file_name} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
+								);
+							} else if (call.toolName === TOOL_NAMES.GET_FILE_CONTENT) {
+								core.info(
+									`Retrieved content for ${call.args.path_to_file} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
+								);
 							} else if (call.toolName === TOOL_NAMES.MARK_AS_DONE) {
 								reviewSummary = call.args.brief_summary;
+								core.info(
+									`Marked review as done with summary: ${reviewSummary.substring(0, 100)}...`,
+								);
 							}
 						}
+					} else {
+						core.warning(
+							"No tool calls were made by the model. This suggests the model is not properly using the tools.",
+						);
 					}
 
 					// If no summary was captured from mark_as_done, use the generated text
 					if (!reviewSummary) {
 						reviewSummary = text;
+						core.info(
+							`Using generated text as review summary: ${reviewSummary.substring(0, 100)}...`,
+						);
 					}
 
 					// Generate structured review results using generateObject
 					try {
 						const structuredPrompt = `Based on your review of ${changedFiles.length} files, please provide a structured summary of your findings. Include the number of issues found, the files you reviewed, and any recommendations.`;
 
+						core.info("Generating structured review results...");
 						const { object: reviewResult } = await generateObject({
 							model,
 							schema: ReviewResultSchema,

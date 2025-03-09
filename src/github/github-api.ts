@@ -144,67 +144,138 @@ export class GitHubAPI {
 		core.info(`Getting content: ${filePath} (${baseRef} -> ${actualRef})`);
 
 		try {
-			const { data: fileMetadata } = await this.octokit.rest.repos.getContent({
-				owner,
-				repo,
-				path: filePath,
-				ref: actualRef,
-			});
+			// First try to get the file content directly
+			try {
+				const { data: fileMetadata } = await this.octokit.rest.repos.getContent(
+					{
+						owner,
+						repo,
+						path: filePath,
+						ref: actualRef,
+					},
+				);
 
-			if (
-				Array.isArray(fileMetadata) ||
-				(fileMetadata as any).type !== "file"
-			) {
-				return `[${Array.isArray(fileMetadata) ? "Directory" : (fileMetadata as any).type} not shown]`;
-			}
+				if (Array.isArray(fileMetadata)) {
+					core.warning(`Path ${filePath} is a directory, not a file`);
+					return `[Directory not shown]`;
+				}
 
-			if ((fileMetadata as any).download_url) {
-				// Check if the file is a text file by comparing changes between refs
-				let isTextFile = true;
-				try {
-					// Compare the file between baseRef and actualRef
-					const { data: comparison } =
-						await this.octokit.rest.repos.compareCommits({
-							owner,
-							repo,
-							base: baseRef,
-							head: actualRef,
-						});
-
-					// Find the file in the comparison results
-					const fileInfo = comparison.files?.find(
-						(file: any) => file.filename === filePath,
-					);
-
-					// If the file has a patch, it's a text file
-					isTextFile = fileInfo && fileInfo.patch !== undefined;
-				} catch (error) {
-					// If comparison fails, assume it's a binary
+				if ((fileMetadata as any).type !== "file") {
 					core.warning(
-						`Error checking file type: ${error instanceof Error ? error.message : String(error)}`,
+						`Path ${filePath} is not a file (type: ${(fileMetadata as any).type})`,
 					);
-					isTextFile = false;
+					return `[${(fileMetadata as any).type} not shown]`;
 				}
 
-				if (!isTextFile) {
-					return "[Binary file not shown in review]";
+				// Check if the file has content
+				if (
+					(fileMetadata as any).content &&
+					(fileMetadata as any).encoding === "base64"
+				) {
+					const content = Buffer.from(
+						(fileMetadata as any).content,
+						"base64",
+					).toString("utf-8");
+					core.info(
+						`Successfully retrieved content for ${filePath} (${content.length} characters)`,
+					);
+					return content;
 				}
+
+				// If we have a download URL, try to fetch the content directly
+				if ((fileMetadata as any).download_url) {
+					core.info(
+						`Fetching content from download URL: ${(fileMetadata as any).download_url}`,
+					);
+					const response = await fetch((fileMetadata as any).download_url);
+					if (response.ok) {
+						const content = await response.text();
+						core.info(
+							`Successfully retrieved content from download URL for ${filePath} (${content.length} characters)`,
+						);
+						return content;
+					} else {
+						core.warning(
+							`Failed to fetch content from download URL: ${response.status} ${response.statusText}`,
+						);
+					}
+				}
+			} catch (error) {
+				core.warning(
+					`Error getting content with getContent API: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				// Continue to try alternative methods
 			}
 
-			if (
-				(fileMetadata as any).content &&
-				(fileMetadata as any).encoding === "base64"
-			) {
-				return Buffer.from((fileMetadata as any).content, "base64").toString(
-					"utf-8",
+			// If direct content retrieval fails, try to get the raw content using the raw URL
+			try {
+				const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${actualRef}/${filePath}`;
+				core.info(`Trying to fetch content from raw URL: ${rawUrl}`);
+				const response = await fetch(rawUrl);
+				if (response.ok) {
+					const content = await response.text();
+					core.info(
+						`Successfully retrieved content from raw URL for ${filePath} (${content.length} characters)`,
+					);
+					return content;
+				} else {
+					core.warning(
+						`Failed to fetch content from raw URL: ${response.status} ${response.statusText}`,
+					);
+				}
+			} catch (error) {
+				core.warning(
+					`Error getting content from raw URL: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+
+			// If all else fails, try to get the content from the diff
+			try {
+				core.info(`Trying to extract content from diff for ${filePath}`);
+				const { data: comparison } =
+					await this.octokit.rest.repos.compareCommits({
+						owner,
+						repo,
+						base: baseRef,
+						head: actualRef,
+					});
+
+				const fileInfo = comparison.files?.find(
+					(file: any) => file.filename === filePath,
+				);
+
+				if (fileInfo && fileInfo.patch) {
+					core.info(`Found patch for ${filePath} in diff`);
+					// Extract content from patch (this is a simplified approach)
+					const lines = fileInfo.patch
+						.split("\n")
+						.filter(
+							(line: string) => !line.startsWith("-") && !line.startsWith("@@"),
+						)
+						.map((line: string) =>
+							line.startsWith("+") ? line.substring(1) : line,
+						);
+
+					const content = lines.join("\n");
+					core.info(
+						`Extracted content from patch for ${filePath} (${content.length} characters)`,
+					);
+					return content;
+				} else {
+					core.warning(`No patch found for ${filePath} in diff`);
+				}
+			} catch (error) {
+				core.warning(
+					`Error extracting content from diff: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 		} catch (error) {
-			core.warning(
+			core.error(
 				`Error getting content for ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 
+		core.warning(`All methods to retrieve content for ${filePath} failed`);
 		return "[File content unavailable]";
 	}
 
