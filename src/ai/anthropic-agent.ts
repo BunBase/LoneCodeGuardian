@@ -55,8 +55,76 @@ const CodeReviewSchema = z.object({
 	recommendations: z.array(z.string()),
 });
 
+/**
+ * Schema for tool call request
+ */
+const ToolCallRequestSchema = z.object({
+	action: z.enum([
+		"get_file_content",
+		"add_review_comment",
+		"mark_as_done",
+		"explore_project",
+	]),
+	params: z
+		.object({
+			// For get_file_content
+			path_to_file: z.string().optional(),
+			start_line_number: z.number().int().positive().optional(),
+			end_line_number: z.number().int().positive().optional(),
+
+			// For add_review_comment
+			file_name: z.string().optional(),
+			found_error_description: z.string().optional(),
+			side: z.enum(["LEFT", "RIGHT"]).optional(),
+
+			// For mark_as_done
+			brief_summary: z.string().optional(),
+
+			// For explore_project
+			directory_path: z.string().optional(),
+		})
+		.partial(),
+	reasoning: z.string().min(1, "Reasoning is required"),
+});
+
+/**
+ * Schema for review step
+ */
+const ReviewStepSchema = z.object({
+	currentFile: z.string(),
+	analysisComplete: z.boolean().default(false),
+	observations: z.array(z.string()).default([]),
+	issues: z
+		.array(
+			z.object({
+				lineStart: z.number().int().positive(),
+				lineEnd: z.number().int().positive(),
+				description: z.string().min(1),
+				severity: z.enum(["low", "medium", "high"]),
+				category: z
+					.enum([
+						"security",
+						"performance",
+						"bug",
+						"type-safety",
+						"error-handling",
+						"maintainability",
+						"best-practice",
+						"other",
+					])
+					.default("other"),
+				suggestedFix: z.string().optional(),
+				suggestDiff: z.boolean().default(false),
+			}),
+		)
+		.default([]),
+	nextAction: ToolCallRequestSchema.optional(),
+});
+
 type ReviewResult = z.infer<typeof ReviewResultSchema>;
 type CodeReview = z.infer<typeof CodeReviewSchema>;
+type ToolCallRequest = z.infer<typeof ToolCallRequestSchema>;
+type ReviewStep = z.infer<typeof ReviewStepSchema>;
 
 /**
  * AI agent implementation for Anthropic Claude
@@ -115,224 +183,235 @@ export class AnthropicAgent extends AIAgent {
 			const reviewedFiles = new Set<string>();
 			let commentsMade = 0;
 
+			// Store file contents and project structure
+			const fetchedFileContents: Record<string, string> = {};
+			let projectStructure = "";
+
 			// Create a loop with retries for reliability
 			for (let retries = 0; retries < maxRetries; retries++) {
 				try {
-					// Run the code review
-					core.info(
-						`Attempt ${retries + 1}/${maxRetries} to generate review using Anthropic model`,
-					);
+					// Step 1: Get project structure to provide context
+					core.info("Step 1: Fetching project structure...");
 
-					// Step 1: First, use generateText to fetch file content
-					core.info("Step 1: Fetching file content...");
-
-					// Create a more explicit prompt for fetching file content
-					const fetchPrompt = `I need to review the following files in a pull request:
-
-${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
-
-IMPORTANT: You MUST use the get_file_content tool to fetch the ENTIRE content of EACH file listed above.
-For each file:
-1. Call get_file_content with the file path
-2. Use a large enough range to get the full file (e.g., lines 1-1000)
-3. Confirm you have fetched the content before proceeding
-
-Please fetch the content of all files now.`;
-
-					// Fetch file content with a more explicit prompt
-					const { toolCalls: fetchToolCalls } = await generateText({
-						model,
-						system: this.getSystemPrompt(),
-						prompt: fetchPrompt,
-						tools,
-						temperature: 0.2,
-						maxTokens: 4000,
-					});
-
-					// Process fetch tool calls and store file contents for later use
-					const fetchedFileContents: Record<string, string> = {};
-					if (fetchToolCalls && fetchToolCalls.length > 0) {
-						core.info(`Processing ${fetchToolCalls.length} fetch tool calls`);
-						for (const call of fetchToolCalls) {
-							core.info(
-								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
-							);
-							if (call.toolName === TOOL_NAMES.GET_FILE_CONTENT) {
-								const filePath = call.args.path_to_file;
-								// Store the fetched content for later use
-								try {
-									const content = await this.fileContentGetter(filePath);
-									fetchedFileContents[filePath] = content;
-									core.info(
-										`Retrieved and stored content for ${filePath} (${content.length} characters)`,
-									);
-								} catch (error) {
-									core.warning(
-										`Failed to fetch content for ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
-									);
-								}
-							}
-						}
-					} else {
-						core.warning(
-							"No fetch tool calls were made. This may affect the quality of the review.",
+					try {
+						// Use the fileContentGetter to get a list of files in the project
+						// This is a simplified approach - in a real implementation, you might want to use a more sophisticated method
+						const rootDir = "."; // Start from the root directory
+						const projectFiles = await this.getProjectStructure(rootDir);
+						projectStructure = projectFiles;
+						core.info(
+							`Successfully retrieved project structure (${projectStructure.length} characters)`,
 						);
+					} catch (error) {
+						core.warning(
+							`Failed to fetch project structure: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						projectStructure = "Failed to retrieve project structure";
+					}
 
-						// Fallback: Manually fetch content for all files
-						core.info("Manually fetching file content as fallback...");
-						for (const file of simpleChangedFiles) {
+					// Step 2: Process each file individually with a structured approach
+					for (const file of simpleChangedFiles) {
+						core.info(`Processing file: ${file.filename}`);
+						reviewedFiles.add(file.filename);
+
+						// Fetch the file content first
+						try {
+							const content = await this.fileContentGetter(file.filename);
+							fetchedFileContents[file.filename] = content;
+							core.info(
+								`Retrieved content for ${file.filename} (${content.length} characters)`,
+							);
+						} catch (error) {
+							core.warning(
+								`Failed to fetch content for ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							continue; // Skip this file if we can't get its content
+						}
+
+						// Create initial context for the file review
+						let initialContext = `
+You are reviewing the file ${file.filename} which was ${file.status} in this pull request.
+Changes: +${file.additions}/-${file.deletions} lines
+
+Project Structure:
+${projectStructure}
+
+File Content:
+\`\`\`
+${fetchedFileContents[file.filename]}
+\`\`\`
+
+Please analyze this file for issues and provide your observations. For each issue, specify:
+1. Line numbers (start and end)
+2. Description of the issue
+3. Severity (low, medium, high)
+4. Category (security, performance, bug, type-safety, error-handling, maintainability, best-practice, other)
+5. Suggested fix (if applicable)
+6. Whether to suggest the fix as a GitHub diff (suggestDiff: true/false)
+
+You can also request additional context by specifying a nextAction to explore the project or get content from other files.
+`;
+
+						// Use generateObject for structured file analysis
+						let analysisComplete = false;
+						let fileIssues: Array<{
+							lineStart: number;
+							lineEnd: number;
+							description: string;
+							severity: string;
+							category: string;
+							suggestedFix?: string;
+							suggestDiff?: boolean;
+						}> = [];
+						let stepCount = 0;
+						const maxSteps = 10; // Limit the number of steps to prevent infinite loops
+
+						while (!analysisComplete && stepCount < maxSteps) {
+							stepCount++;
+							core.info(`File analysis step ${stepCount} for ${file.filename}`);
+
 							try {
-								const content = await this.fileContentGetter(file.filename);
-								fetchedFileContents[file.filename] = content;
-								core.info(
-									`Manually retrieved content for ${file.filename} (${content.length} characters)`,
-								);
+								const { object: reviewStep } = await generateObject({
+									model,
+									schema: ReviewStepSchema,
+									prompt:
+										initialContext +
+										(stepCount > 1
+											? "\n\nContinue your analysis based on the additional context."
+											: ""),
+									temperature: 0.1,
+								});
+
+								// Process the review step
+								analysisComplete = reviewStep.analysisComplete;
+
+								// Add any new issues to our collection
+								if (reviewStep.issues && reviewStep.issues.length > 0) {
+									fileIssues = [...fileIssues, ...reviewStep.issues];
+									core.info(
+										`Found ${reviewStep.issues.length} issues in ${file.filename}`,
+									);
+
+									// Add comments for each issue
+									for (const issue of reviewStep.issues) {
+										try {
+											// Format the comment based on whether it's a suggested change
+											let commentText: string;
+											if (issue.suggestedFix && issue.suggestDiff) {
+												commentText = this.formatSuggestedChange(
+													issue.description,
+													issue.severity,
+													issue.category,
+													issue.suggestedFix,
+													file.filename,
+													issue.lineStart,
+													issue.lineEnd,
+												);
+											} else {
+												commentText = `**${issue.severity.toUpperCase()} Severity ${issue.category.toUpperCase()} Issue**: ${issue.description}${issue.suggestedFix ? `\n\n**Suggested Fix**:\n\`\`\`\n${issue.suggestedFix}\n\`\`\`` : ""}`;
+											}
+
+											// Add the comment
+											await this.fileCommentator(
+												commentText,
+												file.filename,
+												"RIGHT",
+												issue.lineStart,
+												issue.lineEnd,
+											);
+
+											commentsMade++;
+											core.info(
+												`Added comment to ${file.filename} at lines ${issue.lineStart}-${issue.lineEnd}`,
+											);
+										} catch (error) {
+											core.warning(
+												`Failed to add comment to ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+											);
+										}
+									}
+								}
+
+								// Process next action if needed
+								if (!analysisComplete && reviewStep.nextAction) {
+									const action: ToolCallRequest = reviewStep.nextAction;
+									core.info(`Executing next action: ${action.action}`);
+
+									if (
+										action.action === "get_file_content" &&
+										action.params.path_to_file
+									) {
+										// Fetch content from another file for context
+										try {
+											const otherFilePath = action.params.path_to_file;
+											const startLine = action.params.start_line_number || 1;
+											const endLine = action.params.end_line_number || 1000; // Use a large number as default
+
+											// Use the tool to get the content
+											const content = await this.getFileContentWithCache(
+												otherFilePath,
+												startLine,
+												endLine,
+											);
+
+											// Add this content to the context for the next iteration
+											initialContext += `\n\nAdditional context from ${otherFilePath} (lines ${startLine}-${endLine}):\n${content}\n`;
+											core.info(
+												`Added content from ${otherFilePath} to context`,
+											);
+										} catch (error) {
+											core.warning(
+												`Failed to get content from ${action.params.path_to_file}: ${error instanceof Error ? error.message : String(error)}`,
+											);
+											initialContext += `\n\nFailed to get content from ${action.params.path_to_file}\n`;
+										}
+									} else if (
+										action.action === "explore_project" &&
+										action.params.directory_path
+									) {
+										// Explore a directory for context
+										try {
+											const dirPath = action.params.directory_path;
+											const dirStructure =
+												await this.getProjectStructure(dirPath);
+											initialContext += `\n\nDirectory structure for ${dirPath}:\n${dirStructure}\n`;
+											core.info(
+												`Added directory structure for ${dirPath} to context`,
+											);
+										} catch (error) {
+											core.warning(
+												`Failed to explore directory ${action.params.directory_path}: ${error instanceof Error ? error.message : String(error)}`,
+											);
+											initialContext += `\n\nFailed to explore directory ${action.params.directory_path}\n`;
+										}
+									}
+								}
 							} catch (error) {
 								core.warning(
-									`Failed to manually fetch content for ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+									`Error in file analysis step: ${error instanceof Error ? error.message : String(error)}`,
 								);
+								analysisComplete = true; // Stop on error
 							}
 						}
-					}
 
-					// Step 2: Now, use generateText to analyze the files and identify issues
-					core.info("Step 2: Analyzing files and identifying issues...");
-
-					// Create a more explicit prompt that includes the file content
-					let reviewPrompt = `I need you to review the following files in a pull request:
-
-${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
-
-Here is the content of each file:
-
-`;
-
-					// Add the content of each file to the prompt
-					for (const [filePath, content] of Object.entries(
-						fetchedFileContents,
-					)) {
-						// Add a section for each file with its content
-						reviewPrompt += `\n\n=== FILE: ${filePath} ===\n\n\`\`\`typescript\n${content}\n\`\`\`\n`;
-					}
-
-					// Add instructions for the review
-					reviewPrompt += `\n\nPlease review these files for issues. For each issue you find, use the add_review_comment tool to add a comment to the specific lines of code.
-
-Focus on:
-- Real bugs and logic errors (high priority)
-- Security vulnerabilities (high priority)
-- Type safety issues
-- Error handling problems
-- Performance concerns
-
-For each issue, provide:
-1. The file name
-2. The line numbers where the issue occurs
-3. A description of the issue
-4. The severity (low, medium, high)
-5. A suggested fix if possible
-
-When you're done reviewing, use the mark_as_done tool with a brief summary.`;
-
-					// Check if the prompt is too long and truncate if necessary
-					const maxPromptLength = 100000; // Set a reasonable limit
-					if (reviewPrompt.length > maxPromptLength) {
-						core.warning(
-							`Review prompt is too long (${reviewPrompt.length} chars). Truncating to ${maxPromptLength} chars.`,
-						);
-						reviewPrompt = reviewPrompt.substring(0, maxPromptLength);
-					}
-
-					// Analyze the files with the content included in the prompt
-					const { toolCalls: reviewToolCalls } = await generateText({
-						model,
-						system: this.getSystemPrompt(),
-						prompt: reviewPrompt,
-						tools,
-						temperature: 0.2,
-						maxTokens: 8000,
-					});
-
-					// Process review tool calls
-					let reviewSummaryFromMarkAsDone = "";
-					if (reviewToolCalls && reviewToolCalls.length > 0) {
-						core.info(`Processing ${reviewToolCalls.length} review tool calls`);
-						for (const call of reviewToolCalls) {
-							core.info(
-								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
-							);
-							if (call.toolName === TOOL_NAMES.ADD_REVIEW_COMMENT) {
-								commentsMade++;
-								reviewedFiles.add(call.args.file_name);
-								core.info(
-									`Added review comment to ${call.args.file_name} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
-								);
-
-								// Actually add the comment
-								try {
-									await this.fileCommentator(
-										call.args.found_error_description,
-										call.args.file_name,
-										call.args.side || "RIGHT",
-										call.args.start_line_number,
-										call.args.end_line_number,
-									);
-								} catch (error) {
-									core.warning(
-										`Failed to add comment to ${call.args.file_name}: ${error instanceof Error ? error.message : String(error)}`,
-									);
-								}
-							} else if (call.toolName === TOOL_NAMES.MARK_AS_DONE) {
-								reviewSummaryFromMarkAsDone = call.args.brief_summary;
-								core.info(
-									`Marked review as done with summary: ${reviewSummaryFromMarkAsDone.substring(0, 100)}...`,
-								);
-							}
-						}
-					} else {
-						core.warning(
-							"No review tool calls were made. This suggests the model didn't find any issues or didn't properly use the tools.",
+						core.info(
+							`Completed analysis of ${file.filename} with ${fileIssues.length} issues found`,
 						);
 					}
 
-					// Step 3: Generate a structured summary
+					// Step 3: Generate a structured summary of all findings
 					core.info("Step 3: Generating structured summary...");
 
-					// Create a summary prompt that includes file content summaries
-					let summaryPrompt = `Based on your review of the following files:
-
+					// Create a summary prompt with all the information we've gathered
+					const summaryPrompt = `
+You have reviewed the following files in a pull request:
 ${simpleChangedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
 
-Here are brief summaries of each file's content:
+Project Structure:
+${projectStructure}
 
+Please provide a structured summary of your findings. Include a summary for each file, any issues found, and recommendations.
 `;
-
-					// Add a summary of each file's content
-					for (const [filePath, content] of Object.entries(
-						fetchedFileContents,
-					)) {
-						// Add a brief description of each file (first 500 chars)
-						const contentPreview =
-							content.length > 500
-								? `${content.substring(0, 500)}...`
-								: content;
-						summaryPrompt += `\n\n=== FILE: ${filePath} ===\nPreview: ${contentPreview}\n`;
-					}
-
-					// Add instructions for the structured summary
-					summaryPrompt += `\n\nPlease provide a structured summary of your findings. Include a summary for each file, any issues found, and recommendations.
-
-For each issue, please categorize it as one of the following:
-- security: Security vulnerabilities or concerns
-- performance: Performance issues or inefficiencies
-- bug: Logical errors or bugs in the code
-- type-safety: Type safety issues or potential runtime errors
-- error-handling: Inadequate or improper error handling
-- maintainability: Code that is difficult to maintain or understand
-- best-practice: Violations of best practices
-- other: Any other issues that don't fit the above categories
-
-Also, for each issue with a suggested fix, indicate whether the fix should be presented as a GitHub suggested change (suggestDiff: true).`;
 
 					try {
 						const { object: reviewResult } = await generateObject({
@@ -342,44 +421,6 @@ Also, for each issue with a suggested fix, indicate whether the fix should be pr
 							temperature: 0.1,
 						});
 
-						// Process the structured review to add GitHub suggested changes
-						for (const file of reviewResult.filesReviewed) {
-							for (const issue of file.issues) {
-								if (issue.suggestedFix && issue.suggestDiff) {
-									try {
-										// Format the comment to include GitHub's suggested changes syntax
-										const suggestedChangeComment = this.formatSuggestedChange(
-											issue.description,
-											issue.severity,
-											issue.category,
-											issue.suggestedFix,
-											file.filename,
-											issue.lineStart,
-											issue.lineEnd,
-										);
-
-										// Add the suggested change comment
-										await this.fileCommentator(
-											suggestedChangeComment,
-											file.filename,
-											"RIGHT",
-											issue.lineStart,
-											issue.lineEnd,
-										);
-
-										commentsMade++;
-										core.info(
-											`Added suggested change to ${file.filename} at lines ${issue.lineStart}-${issue.lineEnd}`,
-										);
-									} catch (error) {
-										core.warning(
-											`Failed to add suggested change to ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
-										);
-									}
-								}
-							}
-						}
-
 						// Generate the review summary with categories
 						reviewSummary = `# Code Review Summary\n\n${reviewResult.summary}\n\n## Details\n\n- **Files Reviewed**: ${reviewResult.filesReviewed.map((f) => f.filename).join(", ")}\n- **Issues Found**: ${reviewResult.filesReviewed.reduce((count, file) => count + file.issues.length, 0)}\n- **Severity**: ${reviewResult.overallSeverity}\n\n## Issues by Category\n\n${this.generateCategorySummary(reviewResult)}\n\n## Recommendations\n\n${reviewResult.recommendations.map((rec) => `- ${rec}`).join("\n")}\n\n## File Summaries\n\n${reviewResult.filesReviewed.map((file) => `### ${file.filename}\n\n${file.summary}${file.issues.length > 0 ? `\n\n**Issues**: ${file.issues.length}` : ""}`).join("\n\n")}`;
 					} catch (error) {
@@ -387,12 +428,8 @@ Also, for each issue with a suggested fix, indicate whether the fix should be pr
 							`Failed to generate structured summary: ${error instanceof Error ? error.message : String(error)}`,
 						);
 
-						// Fallback to using the mark_as_done summary
-						if (reviewSummaryFromMarkAsDone) {
-							reviewSummary = `# Code Review Summary\n\n${reviewSummaryFromMarkAsDone}`;
-						} else {
-							reviewSummary = `# Code Review Summary\n\nReviewed ${reviewedFiles.size} files and found ${commentsMade} issues.`;
-						}
+						// Fallback to a simple summary
+						reviewSummary = `# Code Review Summary\n\nReviewed ${reviewedFiles.size} files and found ${commentsMade} issues.`;
 					}
 
 					// Review completed successfully
@@ -507,5 +544,133 @@ ${suggestedFix}
 		}
 
 		return summary;
+	}
+
+	/**
+	 * Gets the project structure for a given directory
+	 * @param dirPath - Path to the directory
+	 * @returns A string representation of the directory structure
+	 */
+	async getProjectStructure(dirPath: string): Promise<string> {
+		try {
+			// We'll use the GitHub API to get the repository structure
+			// This is more reliable than trying to use the file system directly
+			// since the GitHub Action runs in various environments
+
+			// First, check if we have access to the GitHub API through our fileContentGetter
+			const owner = process.env.GITHUB_REPOSITORY_OWNER || "";
+			const repo = process.env.GITHUB_REPOSITORY?.split("/")[1] || "";
+
+			if (!owner || !repo) {
+				// Fallback to a basic approach if we can't get the repository info
+				return this.getBasicProjectStructure(dirPath);
+			}
+
+			// Use the GitHub API to get the repository contents
+			try {
+				// We'll use our fileContentGetter as a proxy to make a GitHub API request
+				// This is a bit of a hack, but it allows us to reuse existing code
+				const apiPath = `${dirPath}?type=dir`;
+				const content = await this.fileContentGetter(apiPath);
+
+				// Parse the content as JSON if possible
+				try {
+					const data = JSON.parse(content);
+					return this.formatDirectoryStructure(data, dirPath);
+				} catch (parseError) {
+					// If we can't parse the content as JSON, use it as-is
+					return `Directory: ${dirPath}\n${content}`;
+				}
+			} catch (apiError) {
+				// Fallback to a basic approach if the API request fails
+				return this.getBasicProjectStructure(dirPath);
+			}
+		} catch (error) {
+			// Fallback to a basic approach if anything goes wrong
+			return this.getBasicProjectStructure(dirPath);
+		}
+	}
+
+	/**
+	 * Formats directory data into a tree structure
+	 * @param data - Directory data from GitHub API
+	 * @param dirPath - Path to the directory
+	 * @returns A string representation of the directory structure
+	 */
+	private formatDirectoryStructure(
+		data: Array<{ name: string; type: string; path: string }>,
+		dirPath: string,
+	): string {
+		if (!Array.isArray(data) || data.length === 0) {
+			return `Directory: ${dirPath} (empty)`;
+		}
+
+		// Sort entries: directories first, then files
+		const sortedData = [...data].sort((a, b) => {
+			if (a.type === "dir" && b.type !== "dir") return -1;
+			if (a.type !== "dir" && b.type === "dir") return 1;
+			return a.name.localeCompare(b.name);
+		});
+
+		// Format the directory structure
+		let result = `Directory: ${dirPath}\n`;
+
+		for (let i = 0; i < sortedData.length; i++) {
+			const entry = sortedData[i];
+			const isLast = i === sortedData.length - 1;
+			const prefix = isLast ? "└── " : "├── ";
+
+			if (entry.type === "dir") {
+				result += `${prefix}${entry.name}/\n`;
+			} else {
+				result += `${prefix}${entry.name}\n`;
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Gets a basic project structure when GitHub API is not available
+	 * @param dirPath - Path to the directory
+	 * @returns A basic string representation of the directory structure
+	 */
+	private getBasicProjectStructure(dirPath: string): string {
+		// Instead of hardcoding the structure, we'll try to infer it from common patterns
+		// and environment variables available in GitHub Actions
+
+		// Get repository information from environment variables
+		const repoName = process.env.GITHUB_REPOSITORY || "unknown/repository";
+		const workflowName = process.env.GITHUB_WORKFLOW || "code-review";
+		const runnerOS = process.env.RUNNER_OS || "Linux";
+		const actionPath = process.env.GITHUB_ACTION_PATH || "";
+
+		// Create a generic message that doesn't assume specific file structure
+		return `
+Directory: ${dirPath} (dynamically inferred)
+Note: Actual structure not available. The code review will focus on the changed files without assuming a specific project structure.
+
+Repository: ${repoName}
+Workflow: ${workflowName}
+Runner OS: ${runnerOS}
+Action Path: ${actionPath}
+
+Common directories that might exist:
+- src/ or lib/ (Source code)
+- test/ or tests/ (Test files)
+- docs/ (Documentation)
+- config/ or conf/ (Configuration)
+- dist/ or build/ (Build artifacts)
+- node_modules/ (Node.js dependencies, if applicable)
+- .github/ (GitHub-specific files)
+
+The code review will analyze the changed files in context, focusing on:
+- Code quality and correctness
+- Security vulnerabilities
+- Performance issues
+- Type safety (for typed languages)
+- Error handling
+- Best practices
+`;
 	}
 }
