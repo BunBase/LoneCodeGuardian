@@ -16,7 +16,34 @@ const ReviewResultSchema = z.object({
 	severity: z.enum(["low", "medium", "high"]).optional(),
 });
 
+/**
+ * Schema for detailed code review
+ */
+const CodeReviewSchema = z.object({
+	summary: z.string().min(1, "Summary is required"),
+	filesReviewed: z.array(
+		z.object({
+			filename: z.string(),
+			issues: z
+				.array(
+					z.object({
+						lineStart: z.number().int().positive(),
+						lineEnd: z.number().int().positive(),
+						description: z.string().min(1),
+						severity: z.enum(["low", "medium", "high"]),
+						suggestedFix: z.string().optional(),
+					}),
+				)
+				.optional(),
+			summary: z.string(),
+		}),
+	),
+	overallSeverity: z.enum(["low", "medium", "high"]),
+	recommendations: z.array(z.string()),
+});
+
 type ReviewResult = z.infer<typeof ReviewResultSchema>;
+type CodeReview = z.infer<typeof CodeReviewSchema>;
 
 /**
  * AI agent implementation for Anthropic Claude
@@ -95,46 +122,47 @@ IMPORTANT INSTRUCTIONS:
 4. You MUST use the exact filenames as listed above in your review
 5. You MUST NOT mention files like "main.js", "auth.py", "database.sql", or any other files that are not in the list above
 
-Please review these files for issues and provide specific actionable comments where appropriate. If you need to see a file's content, use the get_file_content tool. When you're done reviewing, use the mark_as_done tool with a brief summary.`;
+Please review these files for issues and provide specific actionable comments where appropriate. For each issue found, include the line numbers, description, severity, and a suggested fix if possible.`;
 
 					core.info(
 						`Sending prompt to Anthropic model with ${simpleChangedFiles.length} files`,
 					);
 
-					// Generate the review using the AI model
-					const { text, toolCalls } = await generateText({
+					// Use generateObject to get structured review data
+					core.info("Generating structured code review...");
+
+					// First, use generateText to get tool calls
+					const { text: _, toolCalls } = await generateText({
 						model,
 						system: this.getSystemPrompt(),
 						prompt,
 						tools,
-						temperature: 0.2, // Lower temperature for more focused reviews
+						temperature: 0.2,
+						maxTokens: 8000,
+					});
+
+					// Then, use generateObject to get structured review data
+					const { object: detailedReview } = await generateObject({
+						model,
+						schema: CodeReviewSchema,
+						prompt: `${prompt}\n\nPlease provide your review in a structured format.`,
+						temperature: 0.2,
 					});
 
 					core.info(
-						`Received response from Anthropic model with ${toolCalls?.length || 0} tool calls`,
+						`Received structured review with ${toolCalls?.length || 0} tool calls`,
 					);
 
-					// Count files that were reviewed and comments made
+					// Process tool calls
 					if (toolCalls && toolCalls.length > 0) {
 						core.info(`Processing ${toolCalls.length} tool calls`);
 						for (const call of toolCalls) {
 							core.info(
 								`Tool call: ${call.toolName} with args: ${JSON.stringify(call.args)}`,
 							);
-							if (call.toolName === TOOL_NAMES.ADD_REVIEW_COMMENT) {
-								commentsMade++;
-								reviewedFiles.add(call.args.file_name);
-								core.info(
-									`Added review comment to ${call.args.file_name} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
-								);
-							} else if (call.toolName === TOOL_NAMES.GET_FILE_CONTENT) {
+							if (call.toolName === TOOL_NAMES.GET_FILE_CONTENT) {
 								core.info(
 									`Retrieved content for ${call.args.path_to_file} at lines ${call.args.start_line_number}-${call.args.end_line_number}`,
-								);
-							} else if (call.toolName === TOOL_NAMES.MARK_AS_DONE) {
-								reviewSummary = call.args.brief_summary;
-								core.info(
-									`Marked review as done with summary: ${reviewSummary.substring(0, 100)}...`,
 								);
 							}
 						}
@@ -144,65 +172,35 @@ Please review these files for issues and provide specific actionable comments wh
 						);
 					}
 
-					// If no summary was captured from mark_as_done, use the generated text
-					if (!reviewSummary) {
-						reviewSummary = text;
-						core.info(
-							`Using generated text as review summary: ${reviewSummary.substring(0, 100)}...`,
-						);
-					}
+					// Add review comments for each issue found
+					for (const file of detailedReview.filesReviewed) {
+						reviewedFiles.add(file.filename);
 
-					// Generate structured review results using generateObject
-					try {
-						const structuredPrompt = `Based on your review of the following ${changedFiles.length} files:
-
-${changedFiles.map((file) => `- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})`).join("\n")}
-
-Please provide a structured summary of your findings. Include the number of issues found, the files you reviewed, and any recommendations.
-
-IMPORTANT: You MUST only include the actual files listed above in your review summary. DO NOT make up or reference non-existent files.`;
-
-						core.info("Generating structured review results...");
-						const { object: reviewResult } = await generateObject({
-							model,
-							schema: ReviewResultSchema,
-							prompt: structuredPrompt,
-							temperature: 0.1, // Lower temperature for more consistent structured output
-						});
-
-						// Validate that the files in the review result are actual files from the PR
-						const actualFilenames = changedFiles.map((file) => file.filename);
-						const validatedFiles = reviewResult.filesReviewed.filter((file) =>
-							actualFilenames.includes(file),
-						);
-
-						if (validatedFiles.length !== reviewResult.filesReviewed.length) {
-							core.warning(
-								"Review mentioned non-existent files. Filtering to only include actual files.",
-							);
-							reviewResult.filesReviewed = validatedFiles;
+						if (file.issues && file.issues.length > 0) {
+							for (const issue of file.issues) {
+								try {
+									await this.fileCommentator(
+										`**${issue.severity.toUpperCase()} Severity Issue**: ${issue.description}${issue.suggestedFix ? `\n\n**Suggested Fix**:\n\`\`\`\n${issue.suggestedFix}\n\`\`\`` : ""}`,
+										file.filename,
+										"RIGHT",
+										issue.lineStart,
+										issue.lineEnd,
+									);
+									commentsMade++;
+									core.info(
+										`Added review comment to ${file.filename} at lines ${issue.lineStart}-${issue.lineEnd}`,
+									);
+								} catch (error) {
+									core.warning(
+										`Failed to add comment to ${file.filename}: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								}
+							}
 						}
-
-						// Log structured review results
-						core.info("Structured review results:");
-						core.info(`- Summary: ${reviewResult.summary}`);
-						core.info(`- Files reviewed: ${reviewResult.filesReviewed.length}`);
-						core.info(`- Issues found: ${reviewResult.issuesFound}`);
-						core.info(
-							`- Severity: ${reviewResult.severity || "not specified"}`,
-						);
-						core.info(
-							`- Recommendations: ${reviewResult.recommendations.length}`,
-						);
-
-						// Enhance the review summary with structured data
-						reviewSummary = `# Code Review Summary\n\n${reviewResult.summary}\n\n## Details\n\n- **Files Reviewed**: ${reviewResult.filesReviewed.join(", ")}\n- **Issues Found**: ${reviewResult.issuesFound}\n- **Severity**: ${reviewResult.severity || "Not specified"}\n\n## Recommendations\n\n${reviewResult.recommendations.map((rec) => `- ${rec}`).join("\n")}\n\n---\n\n${reviewSummary}`;
-					} catch (structuredError) {
-						// If structured review fails, continue with the text-based review
-						core.warning(
-							`Could not generate structured review results: ${structuredError instanceof Error ? structuredError.message : String(structuredError)}`,
-						);
 					}
+
+					// Generate the review summary
+					reviewSummary = `# Code Review Summary\n\n${detailedReview.summary}\n\n## Details\n\n- **Files Reviewed**: ${detailedReview.filesReviewed.map((f) => f.filename).join(", ")}\n- **Issues Found**: ${detailedReview.filesReviewed.reduce((count, file) => count + (file.issues?.length || 0), 0)}\n- **Severity**: ${detailedReview.overallSeverity}\n\n## Recommendations\n\n${detailedReview.recommendations.map((rec) => `- ${rec}`).join("\n")}\n\n## File Summaries\n\n${detailedReview.filesReviewed.map((file) => `### ${file.filename}\n\n${file.summary}${file.issues && file.issues.length > 0 ? `\n\n**Issues**: ${file.issues.length}` : ""}`).join("\n\n")}`;
 
 					// Review completed successfully
 					core.info(
