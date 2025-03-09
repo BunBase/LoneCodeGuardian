@@ -7,9 +7,6 @@ on:
         description: 'Pull request number to review'
         required: true
         type: string
-  schedule:
-    # Run every day at midnight
-    - cron: '0 0 * * *'
 
 jobs:
   test-action:
@@ -46,7 +43,6 @@ jobs:
       - name: Run AI Code Review
         uses: ./
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           owner: ${{ github.repository_owner }}
           repo: ${{ github.repository.name }}
           pr_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number || steps.get-pr.outputs.PR_NUMBER }}

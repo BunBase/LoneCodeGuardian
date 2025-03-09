@@ -3,9 +3,6 @@ name: Self Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches:
-      - main
-      - master
 
 jobs:
   code-guardian:
@@ -33,7 +30,6 @@ jobs:
       - name: Run AI Code Review
         uses: ./
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           owner: ${{ github.repository_owner }}
           repo: ${{ github.event.repository.name }}
           pr_number: ${{ github.event.pull_request.number }}
