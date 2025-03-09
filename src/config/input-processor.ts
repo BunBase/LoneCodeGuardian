@@ -37,6 +37,7 @@ const ActionInputSchema = z.object({
 	exclude_extensions: z.string().optional(),
 	include_paths: z.string().optional(),
 	exclude_paths: z.string().optional(),
+	token: z.string().optional(),
 });
 
 type ActionInputs = z.infer<typeof ActionInputSchema>;
@@ -73,22 +74,22 @@ export class InputProcessor {
 		this.owner = inputs.owner;
 		this.pullNumber = inputs.pr_number;
 
-		// Get GitHub token from environment
-		// Try multiple possible environment variables where the token might be stored
+		// Get GitHub token from inputs or environment
+		// GitHub Actions provides the token as secrets.GITHUB_TOKEN or github.token
 		this.githubToken =
-			process.env.GITHUB_TOKEN ||
-			process.env.INPUT_TOKEN ||
-			process.env.INPUT_GITHUB_TOKEN ||
-			"";
+			inputs.token || process.env.GITHUB_TOKEN || process.env.INPUT_TOKEN || "";
 
 		if (!this.githubToken) {
-			core.warning("GITHUB_TOKEN not found in environment. Using empty token.");
-			core.warning("Make sure the workflow has the correct permissions set.");
+			core.warning("GitHub token not found. Using empty token.");
 			core.warning(
-				"Add 'permissions: { contents: read, pull-requests: write }' to your workflow.",
+				"Make sure to pass the token as an input: token: ${{ secrets.GITHUB_TOKEN }}",
 			);
+			core.warning("And ensure the workflow has the correct permissions set:");
+			core.warning("permissions:");
+			core.warning("  contents: read");
+			core.warning("  pull-requests: write");
 		} else {
-			core.info("GitHub token found in environment.");
+			core.info("GitHub token found.");
 		}
 
 		this.aiProvider = inputs.ai_provider;
@@ -154,6 +155,7 @@ export class InputProcessor {
 				}),
 				include_paths: core.getInput("include_paths", { required: false }),
 				exclude_paths: core.getInput("exclude_paths", { required: false }),
+				token: core.getInput("token", { required: false }),
 			};
 
 			// Get provider-specific inputs

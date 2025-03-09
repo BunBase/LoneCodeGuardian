@@ -139,7 +139,7 @@ To test with real data, you can modify the `test/mocks.ts` file to include real 
 | `exclude_paths` | Paths to exclude from review (comma-separated, e.g., "test/,docs/") | No | - |
 | `fail_action_if_review_failed` | If set to true, the action fails when the review process fails | No | `false` |
 
-Note: While the GitHub token is automatically provided to the action based on the job's permissions configuration, it's recommended to explicitly pass it as `token: ${{ github.token }}` to ensure it's properly accessible to the action.
+Note: While the GitHub token is automatically provided to the action based on the job's permissions configuration, it's recommended to explicitly pass it as `token: ${{ secrets.GITHUB_TOKEN }}` to ensure it's properly accessible to the action.
 
 ## Example Usage
 
@@ -165,7 +165,7 @@ jobs:
       - name: AI Code Review
         uses: your-username/LoneCodeGuardian@main
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.repository_name }}
           owner: ${{ github.repository_owner }}
           pr_number: ${{ github.event.pull_request.number }}
@@ -178,7 +178,7 @@ jobs:
           exclude_paths: node_modules/,dist/
 ```
 
-Note: It's important to explicitly pass the GitHub token as `token: ${{ github.token }}` to ensure it's properly accessible to the action, even though the permissions are set at the job level.
+Note: It's important to explicitly pass the GitHub token as `token: ${{ secrets.GITHUB_TOKEN }}` to ensure it's properly accessible to the action, even though the permissions are set at the job level.
 
 ## How It Works
 

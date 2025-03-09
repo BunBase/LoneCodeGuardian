@@ -16,7 +16,7 @@ Additionally, make sure to explicitly pass the GitHub token in your workflow:
 - name: AI Code Review
   uses: your-username/LoneCodeGuardian@main
   with:
-    token: ${{ github.token }}
+    token: ${{ secrets.GITHUB_TOKEN }}
     # Other inputs...
 ```
 
@@ -29,6 +29,6 @@ If you encounter issues with the GitHub Actions workflows:
 1. Check the workflow run logs in the "Actions" tab
 2. Verify that all required secrets are set correctly
 3. Ensure the repository permissions are configured as described above
-4. Make sure you're explicitly passing the GitHub token as `token: ${{ github.token }}`
+4. Make sure you're explicitly passing the GitHub token as `token: ${{ secrets.GITHUB_TOKEN }}`
 5. Check that the PR number provided is valid
 6. Verify that the AI provider API keys are valid and have sufficient quota 

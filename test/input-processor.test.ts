@@ -23,6 +23,7 @@ const testInputs: TestInputs = {
 	...mockInputs,
 	anthropic_api_key: "mock-anthropic-api-key",
 	google_api_key: "mock-google-api-key",
+	token: "mock-github-token",
 };
 
 // Create mock factory functions to ensure fresh mocks for each test

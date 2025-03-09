@@ -43,7 +43,7 @@ jobs:
       - name: Run AI Code Review
         uses: ./
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           owner: ${{ github.repository_owner }}
           repo: ${{ github.repository.name }}
           pr_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number || steps.get-pr.outputs.PR_NUMBER }}
