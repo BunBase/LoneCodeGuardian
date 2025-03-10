@@ -1,0 +1,56 @@
+name: Test AI Code Review Action
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to review'
+        required: true
+        type: string
+
+jobs:
+  test-action:
+    name: Test AI Code Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+      
+      - name: Install dependencies
+        run: bun install
+      
+      - name: Build action
+        run: bun run build
+      
+      - name: Get latest PR number
+        id: get-pr
+        if: github.event_name == 'schedule'
+        run: |
+          PR_NUMBER=$(gh pr list --limit 1 --json number --jq '.[0].number')
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Run AI Code Review
+        uses: ./
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          ai_provider: 'anthropic'
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          include_extensions: '.ts'
+          exclude_extensions: '.test.ts,.spec.ts'
+          include_paths: 'src/'
+          exclude_paths: 'node_modules/,dist/'
+          fail_action_if_review_failed: 'false' 
+          pr_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number || steps.get-pr.outputs.PR_NUMBER }}

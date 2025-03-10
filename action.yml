@@ -1,0 +1,57 @@
+name: 'Lone Code Guardian'
+description: 'Perform code review using AI for solo developers'
+branding:
+  icon: 'book-open'
+  color: 'yellow'
+
+inputs:
+  token:
+    description: 'GitHub token for API access'
+    required: false
+  ai_provider:
+    description: 'AI provider to use (anthropic or google)'
+    required: true
+    default: 'anthropic'
+  anthropic_api_key:
+    description: 'Anthropic API key (required if using Anthropic provider)'
+    required: false
+  anthropic_model:
+    description: 'Anthropic model name (e.g., claude-3-7-sonnet-20250219)'
+    required: false
+    default: 'claude-3-7-sonnet-20250219'
+  google_api_key:
+    description: 'Google AI API key (required if using Google provider)'
+    required: false
+  google_model:
+    description: 'Google model name (e.g., gemini-2.0-flash)'
+    required: false
+    default: 'gemini-2.0-flash'
+  owner:
+    description: 'Repository owner'
+    required: true
+  repo:
+    description: 'Repository name'
+    required: true
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  include_extensions:
+    description: 'File extensions to include in the review (comma-separated, e.g., ".py,.js,.html")'
+    required: false
+  exclude_extensions:
+    description: 'File extensions to exclude from the review (comma-separated)'
+    required: false
+  include_paths:
+    description: 'Paths to include in the review (comma-separated)'
+    required: false
+  exclude_paths:
+    description: 'Paths to exclude from review (comma-separated, e.g., "test/,docs/")'
+    required: false
+  fail_action_if_review_failed:
+    description: 'If set to true, the action fails when the review process fails'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js' 
