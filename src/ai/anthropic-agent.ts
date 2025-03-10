@@ -313,6 +313,63 @@ You can also request additional context by specifying a nextAction to explore th
 									// Add comments for each issue
 									for (const issue of reviewStep.issues) {
 										try {
+											// Get the total number of lines for proper validation
+											const fileLines =
+												fetchedFileContents[file.filename].split("\n");
+											const totalLines = fileLines.length;
+
+											// Validate line numbers are within file bounds
+											if (
+												issue.lineStart < 1 ||
+												issue.lineEnd > totalLines ||
+												issue.lineStart > issue.lineEnd
+											) {
+												core.warning(
+													`Skipping comment with invalid line numbers (${issue.lineStart}-${issue.lineEnd}) for ${file.filename}. File has ${totalLines} lines.`,
+												);
+												continue;
+											}
+
+											// Extract the actual line content for validation
+											const targetLineContent =
+												fileLines[issue.lineStart - 1]?.trim() || "";
+											const contextLines = fileLines
+												.slice(
+													Math.max(0, issue.lineStart - 3),
+													Math.min(totalLines, issue.lineEnd + 3),
+												)
+												.join("\n");
+
+											// Verify comment relevance to avoid misplaced comments
+											if (
+												!this.isCommentRelevantToLineContent(
+													issue.description,
+													targetLineContent,
+													contextLines,
+												)
+											) {
+												// Try to find a better matching line nearby
+												const betterLine = this.findBetterMatchingLine(
+													issue.description,
+													fileLines,
+													issue.lineStart,
+													10, // Look 10 lines before and after
+												);
+
+												if (betterLine !== issue.lineStart) {
+													core.info(
+														`Relocating comment from line ${issue.lineStart} to better matching line ${betterLine}`,
+													);
+													issue.lineStart = betterLine;
+													issue.lineEnd = betterLine;
+												} else {
+													core.warning(
+														`Comment doesn't seem relevant to line ${issue.lineStart}. Skipping to avoid misplacement.`,
+													);
+													continue;
+												}
+											}
+
 											// Format the comment based on whether it's a suggested change
 											let commentText: string;
 											if (issue.suggestedFix && issue.suggestDiff) {
@@ -651,7 +708,7 @@ ${suggestedFix}
 				const indent = currentDepth === 0 ? "" : "  ".repeat(currentDepth);
 				const prefix = isLast ? "└── " : "├── ";
 
-				// Add the item to the result
+				// Add the item to the tree
 				result += `${indent}${prefix}${item}${isDir ? "/" : ""}\n`;
 
 				// Recursively process subdirectories
@@ -723,5 +780,189 @@ The code review will analyze the changed files in context, focusing on:
 - Error handling
 - Best practices
 `;
+	}
+
+	/**
+	 * Check if a comment is relevant to specific line content
+	 * @param comment - The comment text to check
+	 * @param lineContent - The content of the line where the comment would be placed
+	 * @param contextLines - Surrounding lines for additional context
+	 * @returns True if the comment seems relevant to the line
+	 */
+	private isCommentRelevantToLineContent(
+		comment: string,
+		lineContent: string,
+		contextLines: string,
+	): boolean {
+		// If the line is very short, rely more on context
+		if (lineContent.length < 10) {
+			// Check if any keywords from the comment appear in the context
+			return this.hasCommonKeywords(comment, contextLines);
+		}
+
+		// For longer lines, check direct relevance first
+		if (this.hasCommonKeywords(comment, lineContent)) {
+			return true;
+		}
+
+		// Fall back to context check
+		return this.hasCommonKeywords(comment, contextLines);
+	}
+
+	/**
+	 * Find a better matching line for a comment if the original line doesn't match well
+	 * @param comment - The comment text to find a match for
+	 * @param fileLines - All lines in the file
+	 * @param originalLine - The original line number suggested
+	 * @param searchRadius - How many lines to search around the original line
+	 * @returns The best matching line number or the original if no better match found
+	 */
+	private findBetterMatchingLine(
+		comment: string,
+		fileLines: string[],
+		originalLine: number,
+		searchRadius = 5,
+	): number {
+		// Prevent invalid line numbers
+		if (originalLine < 1 || originalLine > fileLines.length) {
+			return Math.min(Math.max(1, originalLine), fileLines.length);
+		}
+
+		// Define the search range
+		const startLine = Math.max(0, originalLine - searchRadius - 1);
+		const endLine = Math.min(fileLines.length, originalLine + searchRadius - 1);
+
+		// Track best matching line and score
+		let bestMatchLine = originalLine;
+		let bestMatchScore = this.calculateRelevanceScore(
+			comment,
+			fileLines[originalLine - 1],
+		);
+
+		// Search for better matches in the range
+		for (let i = startLine; i <= endLine; i++) {
+			// Skip the original line as we already scored it
+			if (i === originalLine - 1) continue;
+
+			const lineContent = fileLines[i];
+			const score = this.calculateRelevanceScore(comment, lineContent);
+
+			// If this is a better match, update our best match
+			if (score > bestMatchScore) {
+				bestMatchScore = score;
+				bestMatchLine = i + 1; // +1 because array is 0-indexed but lines are 1-indexed
+			}
+		}
+
+		return bestMatchLine;
+	}
+
+	/**
+	 * Calculate a numerical score for how relevant a comment is to a line of code
+	 * @param comment - The comment text
+	 * @param lineContent - The line content to match against
+	 * @returns A relevance score (higher is better)
+	 */
+	private calculateRelevanceScore(
+		comment: string,
+		lineContent: string,
+	): number {
+		// Start with no relevance
+		let score = 0;
+
+		// Extract keywords from both texts
+		const commentKeywords = this.extractKeywords(comment);
+		const lineKeywords = this.extractKeywords(lineContent);
+
+		// Count matching keywords
+		const matches = commentKeywords.filter((keyword) =>
+			lineKeywords.includes(keyword),
+		);
+		score += matches.length * 2;
+
+		// Bonus points for exact phrases
+		const commentLower = comment.toLowerCase();
+		const lineLower = lineContent.toLowerCase();
+
+		// Check if this is a declaration or function that matches mention in comment
+		if (
+			(lineLower.includes("function") ||
+				lineLower.includes("const ") ||
+				lineLower.includes("let ") ||
+				lineLower.includes("var ") ||
+				lineLower.includes("class ")) &&
+			this.extractIdentifiers(lineContent).some((id) =>
+				commentLower.includes(id.toLowerCase()),
+			)
+		) {
+			score += 5;
+		}
+
+		// Penalize very short lines (likely just brackets or punctuation)
+		if (lineContent.trim().length < 3) {
+			score -= 2;
+		}
+
+		return score;
+	}
+
+	/**
+	 * Extract relevant keywords from text
+	 * @param text - Text to extract keywords from
+	 * @returns Array of keywords
+	 */
+	private extractKeywords(text: string): string[] {
+		// Convert to lowercase and split into words
+		const words = text.toLowerCase().split(/[^a-z0-9_]+/);
+
+		// Filter out common words and very short words
+		return words.filter(
+			(word) =>
+				word.length > 2 &&
+				!["the", "and", "for", "that", "this", "with", "have", "from"].includes(
+					word,
+				),
+		);
+	}
+
+	/**
+	 * Extract potential code identifiers from a line of code
+	 * @param lineContent - Code line to analyze
+	 * @returns Array of potential identifiers
+	 */
+	private extractIdentifiers(lineContent: string): string[] {
+		// Very basic extraction - in a real implementation this could use more sophisticated parsing
+		const identifierRegex = /[a-zA-Z_$][a-zA-Z0-9_$]*/g;
+		const matches = lineContent.match(identifierRegex) || [];
+
+		// Filter out common keywords
+		const keywords = [
+			"if",
+			"for",
+			"while",
+			"function",
+			"const",
+			"let",
+			"var",
+			"return",
+			"break",
+			"continue",
+		];
+		return matches.filter((match) => !keywords.includes(match));
+	}
+
+	/**
+	 * Check if two texts share meaningful keywords
+	 * @param text1 - First text to compare
+	 * @param text2 - Second text to compare
+	 * @returns True if the texts share any meaningful keywords
+	 */
+	private hasCommonKeywords(text1: string, text2: string): boolean {
+		// Extract keywords from both texts
+		const text1Keywords = this.extractKeywords(text1);
+		const text2Keywords = this.extractKeywords(text2);
+
+		// Check for any common keywords
+		return text1Keywords.some((keyword) => text2Keywords.includes(keyword));
 	}
 }
