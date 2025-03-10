@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as core from "@actions/core";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateObject, generateText } from "ai";
@@ -348,7 +350,7 @@ You can also request additional context by specifying a nextAction to explore th
 											const endLine = action.params.end_line_number || 1000; // Use a large number as default
 
 											// Use the tool to get the content
-											const content = await this.getFileContentWithCache(
+											const content = await this.getFileContent(
 												otherFilePath,
 												startLine,
 												endLine,
@@ -553,81 +555,114 @@ ${suggestedFix}
 	 */
 	async getProjectStructure(dirPath: string): Promise<string> {
 		try {
-			// We'll use the GitHub API to get the repository structure
-			// This is more reliable than trying to use the file system directly
-			// since the GitHub Action runs in various environments
+			// Since we're in a GitHub Action with a full checkout,
+			// we can directly use Node's fs module to list directories
 
-			// First, check if we have access to the GitHub API through our fileContentGetter
-			const owner = process.env.GITHUB_REPOSITORY_OWNER || "";
-			const repo = process.env.GITHUB_REPOSITORY?.split("/")[1] || "";
+			// Normalize the directory path
+			const normalizedPath = path.normalize(
+				dirPath === "." ? process.cwd() : dirPath,
+			);
 
-			if (!owner || !repo) {
-				// Fallback to a basic approach if we can't get the repository info
-				return this.getBasicProjectStructure(dirPath);
+			core.info(`Getting project structure for: ${normalizedPath}`);
+
+			// Check if the directory exists
+			if (
+				!fs.existsSync(normalizedPath) ||
+				!fs.statSync(normalizedPath).isDirectory()
+			) {
+				return `Directory not found: ${normalizedPath}`;
 			}
 
-			// Use the GitHub API to get the repository contents
-			try {
-				// We'll use our fileContentGetter as a proxy to make a GitHub API request
-				// This is a bit of a hack, but it allows us to reuse existing code
-				const apiPath = `${dirPath}?type=dir`;
-				const content = await this.fileContentGetter(apiPath);
-
-				// Parse the content as JSON if possible
-				try {
-					const data = JSON.parse(content);
-					return this.formatDirectoryStructure(data, dirPath);
-				} catch (parseError) {
-					// If we can't parse the content as JSON, use it as-is
-					return `Directory: ${dirPath}\n${content}`;
-				}
-			} catch (apiError) {
-				// Fallback to a basic approach if the API request fails
-				return this.getBasicProjectStructure(dirPath);
-			}
+			// Generate the directory tree recursively (with reasonable depth limits)
+			const tree = await this.generateDirectoryTree(normalizedPath, 3); // Max depth of 3
+			return tree;
 		} catch (error) {
-			// Fallback to a basic approach if anything goes wrong
+			core.warning(
+				`Error getting project structure: ${error instanceof Error ? error.message : String(error)}`,
+			);
 			return this.getBasicProjectStructure(dirPath);
 		}
 	}
 
 	/**
-	 * Formats directory data into a tree structure
-	 * @param data - Directory data from GitHub API
-	 * @param dirPath - Path to the directory
-	 * @returns A string representation of the directory structure
+	 * Recursively generates a directory tree
+	 * @param dir - Directory to traverse
+	 * @param maxDepth - Maximum depth to traverse
+	 * @param currentDepth - Current traversal depth
+	 * @returns Formatted tree structure
 	 */
-	private formatDirectoryStructure(
-		data: Array<{ name: string; type: string; path: string }>,
-		dirPath: string,
-	): string {
-		if (!Array.isArray(data) || data.length === 0) {
-			return `Directory: ${dirPath} (empty)`;
+	private async generateDirectoryTree(
+		dir: string,
+		maxDepth: number,
+		currentDepth = 0,
+	): Promise<string> {
+		// Stop recursion if we've reached max depth
+		if (currentDepth > maxDepth) {
+			return `${path.basename(dir)}/ (max depth reached)`;
 		}
 
-		// Sort entries: directories first, then files
-		const sortedData = [...data].sort((a, b) => {
-			if (a.type === "dir" && b.type !== "dir") return -1;
-			if (a.type !== "dir" && b.type === "dir") return 1;
-			return a.name.localeCompare(b.name);
-		});
+		try {
+			// Read the directory contents
+			const items = fs.readdirSync(dir);
 
-		// Format the directory structure
-		let result = `Directory: ${dirPath}\n`;
+			// Filter and sort items (directories first, then files)
+			const sortedItems = items
+				.filter(
+					(item: string) =>
+						!item.startsWith(".git") &&
+						item !== "node_modules" &&
+						item !== "dist",
+				)
+				.sort((a: string, b: string) => {
+					const aIsDir = fs.statSync(path.join(dir, a)).isDirectory();
+					const bIsDir = fs.statSync(path.join(dir, b)).isDirectory();
+					if (aIsDir && !bIsDir) return -1;
+					if (!aIsDir && bIsDir) return 1;
+					return a.localeCompare(b);
+				});
 
-		for (let i = 0; i < sortedData.length; i++) {
-			const entry = sortedData[i];
-			const isLast = i === sortedData.length - 1;
-			const prefix = isLast ? "└── " : "├── ";
+			// Build the tree
+			let result = currentDepth === 0 ? `Directory: ${dir}\n` : "";
 
-			if (entry.type === "dir") {
-				result += `${prefix}${entry.name}/\n`;
-			} else {
-				result += `${prefix}${entry.name}\n`;
+			// Add each item to the tree
+			for (let i = 0; i < sortedItems.length; i++) {
+				const item = sortedItems[i];
+				const itemPath = path.join(dir, item);
+				const isDir = fs.statSync(itemPath).isDirectory();
+				const isLast = i === sortedItems.length - 1;
+
+				// Calculate the current indent and prefix
+				const indent = currentDepth === 0 ? "" : "  ".repeat(currentDepth);
+				const prefix = isLast ? "└── " : "├── ";
+
+				// Add the item to the result
+				result += `${indent}${prefix}${item}${isDir ? "/" : ""}\n`;
+
+				// Recursively process subdirectories
+				if (isDir) {
+					const childIndent =
+						currentDepth === 0 ? "" : "  ".repeat(currentDepth);
+					const childPrefix = isLast ? "    " : "│   ";
+					const childTree = await this.generateDirectoryTree(
+						itemPath,
+						maxDepth,
+						currentDepth + 1,
+					);
+
+					// Add the child tree, maintaining the proper indentation
+					const childLines = childTree
+						.split("\n")
+						.filter((line) => line.trim());
+					for (const line of childLines) {
+						result += `${childIndent}${childPrefix}${line}\n`;
+					}
+				}
 			}
-		}
 
-		return result;
+			return result;
+		} catch (error) {
+			return `Error reading directory: ${error instanceof Error ? error.message : String(error)}`;
+		}
 	}
 
 	/**

@@ -1,3 +1,4 @@
+import * as core from "@actions/core";
 import { z } from "zod";
 import {
 	type AddReviewCommentArgs,
@@ -15,9 +16,6 @@ import {
  * Base AIAgent class that provides common functionality for all AI providers
  */
 export abstract class AIAgent {
-	protected fileCache: Map<string, string> = new Map();
-	protected cacheLock = false;
-
 	/**
 	 * Creates a new AIAgent instance
 	 * @param apiKey - API key for the AI provider
@@ -89,63 +87,40 @@ Be concise but thorough in your review.
 	}
 
 	/**
-	 * Get file content with caching
+	 * Get file content without caching
 	 * @param pathToFile - Path to the file
 	 * @param startLineNumber - Start line number
 	 * @param endLineNumber - End line number
 	 * @returns File content
 	 */
-	protected async getFileContentWithCache(
+	protected async getFileContent(
 		pathToFile: string,
-		startLineNumber: number,
-		endLineNumber: number,
+		startLineNumber = 1,
+		endLineNumber: number = Number.MAX_SAFE_INTEGER,
 	): Promise<string> {
 		try {
-			const acquireLock = async (): Promise<void> => {
-				const timeout = 5000; // 5 seconds
-				const start = Date.now();
-				while (this.cacheLock) {
-					if (Date.now() - start > timeout) {
-						throw new Error("Timeout while waiting for cache lock");
-					}
-					await new Promise((resolve) => setTimeout(resolve, 10));
+			core.info(
+				`Getting content for file: ${pathToFile} (lines ${startLineNumber}-${endLineNumber})`,
+			);
+			const content = await this.fileContentGetter(pathToFile);
+
+			if (content) {
+				// If we have content and need to extract specific lines
+				if (startLineNumber > 1 || endLineNumber < Number.MAX_SAFE_INTEGER) {
+					const lines = content.split("\n");
+					const startIndex = Math.max(0, startLineNumber - 1);
+					const endIndex = Math.min(lines.length, endLineNumber);
+					return lines.slice(startIndex, endIndex).join("\n");
 				}
-				this.cacheLock = true;
-			};
-
-			const releaseLock = (): void => {
-				this.cacheLock = false;
-			};
-
-			await acquireLock();
-			let content: string;
-
-			try {
-				if (!this.fileCache.has(pathToFile)) {
-					releaseLock();
-					content = await this.fileContentGetter(pathToFile);
-					await acquireLock();
-					this.fileCache.set(pathToFile, content);
-				} else {
-					content = this.fileCache.get(pathToFile) || "";
-				}
-			} finally {
-				releaseLock();
+				return content;
 			}
 
-			const span = 20; // Context lines before and after
-			const lines = content.split("\n");
-			const startIndex = Math.max(0, startLineNumber - 1 - span);
-			const endIndex = Math.min(lines.length, endLineNumber + span);
-			const selectedLines = lines.slice(startIndex, endIndex);
-			return `\`\`\`${pathToFile}\n${selectedLines.join("\n")}\n\`\`\``;
+			return `[Unable to retrieve content for ${pathToFile}]`;
 		} catch (error) {
-			if (this.cacheLock) {
-				this.cacheLock = false;
-			}
-			throw new Error(
+			core.error(
 				`Error getting file content: ${error instanceof Error ? error.message : String(error)}`,
 			);
+			return `[Error retrieving file content: ${error instanceof Error ? error.message : String(error)}]`;
 		}
 	}
 
@@ -237,7 +212,7 @@ Be concise but thorough in your review.
 						),
 				}),
 				execute: async (args: GetFileContentArgs) => {
-					return await this.getFileContentWithCache(
+					return await this.getFileContent(
 						args.path_to_file,
 						args.start_line_number,
 						args.end_line_number,
