@@ -45,12 +45,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           owner: ${{ github.repository_owner }}
-          repo: ${{ github.repository.name }}
-          pr_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number || steps.get-pr.outputs.PR_NUMBER }}
+          repo: ${{ github.event.repository.name }}
           ai_provider: 'anthropic'
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          include_extensions: '.ts,.js,.json,.yml,.yaml'
+          include_extensions: '.ts'
           exclude_extensions: '.test.ts,.spec.ts'
-          include_paths: 'src/,action.yml'
+          include_paths: 'src/'
           exclude_paths: 'node_modules/,dist/'
           fail_action_if_review_failed: 'false' 
+          pr_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number || steps.get-pr.outputs.PR_NUMBER }}
