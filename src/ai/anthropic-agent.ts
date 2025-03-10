@@ -189,6 +189,10 @@ export class AnthropicAgent extends AIAgent {
 			const fetchedFileContents: Record<string, string> = {};
 			let projectStructure = "";
 
+			// Add protection against infinite loops
+			let totalSteps = 0;
+			const MAX_TOTAL_STEPS = 50; // Absolute maximum number of steps across all files
+
 			// Create a loop with retries for reliability
 			for (let retries = 0; retries < maxRetries; retries++) {
 				try {
@@ -215,6 +219,14 @@ export class AnthropicAgent extends AIAgent {
 					for (const file of simpleChangedFiles) {
 						core.info(`Processing file: ${file.filename}`);
 						reviewedFiles.add(file.filename);
+
+						// Skip if we've reached the maximum total steps (global safety limit)
+						if (totalSteps >= MAX_TOTAL_STEPS) {
+							core.warning(
+								`Reached maximum total steps (${MAX_TOTAL_STEPS}). This is a safety limit to prevent infinite loops. Stopping review.`,
+							);
+							break;
+						}
 
 						// Fetch the file content first
 						try {
@@ -270,7 +282,11 @@ You can also request additional context by specifying a nextAction to explore th
 
 						while (!analysisComplete && stepCount < maxSteps) {
 							stepCount++;
-							core.info(`File analysis step ${stepCount} for ${file.filename}`);
+							totalSteps++; // Increment global step counter for safety limit
+
+							core.info(
+								`File analysis step ${stepCount} for ${file.filename} (total steps: ${totalSteps}/${MAX_TOTAL_STEPS})`,
+							);
 
 							try {
 								const { object: reviewStep } = await generateObject({
